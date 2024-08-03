@@ -30,6 +30,11 @@ fn make_seed<T: AsRef<[u8]>>(bytes: T) -> u32 {
     rng.next_u32()
 }
 
+fn next_counter() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
 fn next_id() -> Id {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     const BUFFER: &'static [u8] = b"next_id---id:>        ";
@@ -112,8 +117,7 @@ pub struct NoiseGenInterval {
     initial_amplitude: f64,
     x_mult: f64,
     y_mult: f64,
-    low: NoiseBound,
-    high: NoiseBound,
+    bounds: NoiseBounds,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -141,8 +145,8 @@ pub struct NoiseGenIntervalGui {
     initial_amplitude: f64,
     x_mult: f64,
     y_mult: f64,
-    low: NoiseBound,
-    high: NoiseBound,
+    bounds: NoiseBounds,
+    id: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -175,21 +179,17 @@ pub enum NoiseBoundMode {
     Range,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NoiseBound {
     pub t: f64,
     pub mode: NoiseBoundMode,
 }
 
-// #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-// pub enum NoiseBound {
-//     /// Clamp to value
-//     Clamp(f64),
-//     /// When value is beyond threshold, cutoff to zero.
-//     Cutoff(f64),
-//     /// Clamp to value but also normalize range.
-//     Range(f64),
-// }
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NoiseBounds {
+    pub low: NoiseBound,
+    pub high: NoiseBound,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum Interpolation {
@@ -286,60 +286,6 @@ impl Point {
     }
 }
 
-impl std::ops::Add<Point> for Point {
-    type Output = Self;
-    fn add(self, rhs: Point) -> Self::Output {
-        Self::new(self.x + rhs.x, self.y + rhs.y)
-    }
-}
-
-impl std::ops::Mul<Point> for f64 {
-    type Output = Point;
-    fn mul(self, rhs: Point) -> Self::Output {
-        Point::new(self * rhs.x, self * rhs.y)
-    }
-}
-
-impl std::ops::Mul<f64> for Point {
-    type Output = Self;
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self::new(self.x * rhs, self.y * rhs)
-    }
-}
-
-impl std::ops::Sub<Point> for Point {
-    type Output = Self;
-    fn sub(self, rhs: Point) -> Self::Output {
-        Self {
-            x: self.x - rhs.x,
-            y: self.y - rhs.y
-        }
-    }
-}
-
-impl From<SimplexGui> for Simplex {
-    fn from(value: SimplexGui) -> Self {
-        let seed = make_seed(value.seed);
-        let simplex = OpenSimplex::new(seed);
-        Self {
-            enabled: value.enabled,
-            simplex,
-            intervals: value.intervals.into_iter().filter(|interval| interval.enabled).map(NoiseGenInterval::from).collect(),
-            octave_gen: value.octave_gen,
-        }
-    }
-}
-
-impl Into<splines::Interpolation<f64, f64>> for Interpolation {
-    fn into(self) -> splines::Interpolation<f64, f64> {
-        match self {
-            Interpolation::CatmullRom => splines::Interpolation::CatmullRom,
-            Interpolation::Cosine => splines::Interpolation::Cosine,
-            Interpolation::Linear => splines::Interpolation::Linear,
-        }
-    }
-}
-
 impl InterpKey {
     fn new(x: f64, y: f64, interpolation: Interpolation) -> Self {
         Self {
@@ -351,35 +297,81 @@ impl InterpKey {
     }
 }
 
-impl From<NoiseGenIntervalGui> for NoiseGenInterval {
-    fn from(value: NoiseGenIntervalGui) -> Self {
+impl NoiseBounds {
+    pub const fn new(low: NoiseBound, high: NoiseBound) -> Self {
         Self {
-            enabled: value.enabled,
-            spline: if value.spline.enabled {
-                Some(Spline::from_iter(value.spline.spline.into_iter().map(|interp| {
-                    Key::new(interp.x, interp.y, interp.interpolation.into())
-                })))
-            } else {
-                None
-            },
-            octaves: value.octaves,
-            persistence: value.persistence,
-            lacunarity: value.lacunarity,
-            scale: value.scale,
-            initial_amplitude: value.initial_amplitude,
-            x_mult: value.x_mult,
-            y_mult: value.y_mult,
-            low: value.low,
-            high: value.high
+            low,
+            high
         }
     }
-}
 
-impl From<NoiseGenGui> for NoiseGen {
-    fn from(value: NoiseGenGui) -> Self {
-        Self {
-            octave_gen: value.octave_gen,
-            simplexes: value.simplexes.into_iter().filter(|simplex| simplex.enabled).map(|simplex| simplex.into()).collect()
+    pub fn bound(self, t: f64) -> f64 {
+        use NoiseBoundMode::*;
+        match (self.low.mode, self.high.mode) {
+            (Range, Range) => {
+                let low = self.low.t;
+                let high = self.high.t;
+                let clamped = t.max(low).min(high);
+                let diff = high - low;
+                let rel = clamped - low;
+                rel * (1. / diff)
+            }
+            (Range, Clamp) => {
+                let low = self.low.t;
+                let clamped = t.max(low).min(self.high.t);
+                let diff = 1.0 - low;
+                let rel = clamped - low;
+                rel * (1. / diff)
+            }
+            (Range, Cutoff) => {
+                if t > self.high.t {
+                    0.0
+                } else {
+                    let low = self.low.t;
+                    let clamped = t.max(low);
+                    let diff = 1.0 - low;
+                    let rel = clamped - low;
+                    rel * (1. / diff)
+                }
+            }
+            (Clamp, Range) => {
+                let high = self.high.t;
+                let clamped = t.max(self.low.t).min(high);
+                clamped * (1. / high)
+            }
+            (Clamp, Clamp) => {
+                t.max(self.low.t).min(self.high.t)
+            }
+            (Clamp, Cutoff) => {
+                if t > self.high.t {
+                    0.
+                } else {
+                    t.max(self.low.t)
+                }
+            }
+            (Cutoff, Range) => {
+                if t < self.low.t {
+                    0.
+                } else {
+                    let high = self.high.t;
+                    let clamped = t.min(high);
+                    clamped * (1. / high)
+                }
+            }
+            (Cutoff, Clamp) => {
+                if t < self.low.t {
+                    0.
+                } else {
+                    t.min(self.high.t)
+                }
+            }
+            (Cutoff, Cutoff) => {
+                if t < self.low.t || t > self.high.t {
+                    0.
+                } else {
+                    t
+                }
+            }
         }
     }
 }
@@ -394,73 +386,7 @@ impl NoiseGenInterval {
         } else {
             gradient
         };
-        use NoiseBoundMode::*;
-        match (self.low.mode, self.high.mode) {
-            (Range, Range) => {
-                let low = self.low.t;
-                let high = self.high.t;
-                let clamped = gradient.max(low).min(high);
-                let diff = high - low;
-                let rel = clamped - low;
-                rel * (1. / diff)
-            }
-            (Range, Clamp) => {
-                let low = self.low.t;
-                let clamped = gradient.max(low).min(self.high.t);
-                let diff = 1.0 - low;
-                let rel = clamped - low;
-                rel * (1. / diff)
-            }
-            (Range, Cutoff) => {
-                if gradient > self.high.t {
-                    0.0
-                } else {
-                    let low = self.low.t;
-                    let clamped = gradient.max(low);
-                    let diff = 1.0 - low;
-                    let rel = clamped - low;
-                    rel * (1. / diff)
-                }
-            }
-            (Clamp, Range) => {
-                let high = self.high.t;
-                let clamped = gradient.max(self.low.t).min(high);
-                clamped * (1. / high)
-            }
-            (Clamp, Clamp) => {
-                gradient.max(self.low.t).min(self.high.t)
-            }
-            (Clamp, Cutoff) => {
-                if gradient > self.high.t {
-                    0.
-                } else {
-                    gradient.max(self.low.t)
-                }
-            }
-            (Cutoff, Range) => {
-                if gradient < self.low.t {
-                    0.
-                } else {
-                    let high = self.high.t;
-                    let clamped = gradient.min(high);
-                    clamped * (1. / high)
-                }
-            }
-            (Cutoff, Clamp) => {
-                if gradient < self.low.t {
-                    0.
-                } else {
-                    gradient.min(self.high.t)
-                }
-            }
-            (Cutoff, Cutoff) => {
-                if gradient < self.low.t || gradient > self.high.t {
-                    0.
-                } else {
-                    gradient
-                }
-            }
-        }
+        self.bounds.bound(gradient)
     }
 }
 
@@ -500,75 +426,6 @@ impl NoiseGen {
 }
 
 const LABEL_WIDTH: f32 = 100.;
-
-trait UiExt {
-    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R;
-}
-
-impl UiExt for Ui {
-    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R {
-        let mut add_contents = add_contents;
-        self.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(label_width, ui.spacing().interact_size.y), Sense::hover());
-            let label = egui::widgets::Label::new(text);
-            ui.put(rect, label);
-            add_contents(ui)
-        }).inner
-    }
-}
-
-trait BoolUiExt: Sized + Copy {
-    fn ui_checkbox(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response;
-
-    fn ui_toggle(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response;
-
-    fn toggle(&mut self) -> bool;
-
-    fn opt<T>(self, value: T) -> Option<T>;
-    fn not_opt<T>(self, value: T) -> Option<T>;
-
-    fn select<T>(self, _true: T, _false: T) -> T;
-}
-
-impl BoolUiExt for bool {
-    fn toggle(&mut self) -> bool {
-        let old = *self;
-        *self = !old;
-        old
-    }
-    
-    fn select<T>(self, _true: T, _false: T) -> T {
-        if self {
-            _true
-        } else {
-            _false
-        }
-    }
-
-    fn not_opt<T>(self, value: T) -> Option<T> {
-        if self {
-            None
-        } else {
-            Some(value)
-        }
-    }
-
-    fn opt<T>(self, value: T) -> Option<T> {
-        if self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn ui_checkbox(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
-        ui.checkbox(self, text)
-    }
-
-    fn ui_toggle(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
-        ui.toggle_value(self, text)
-    }
-}
 
 impl Widget for &mut SplineGui {
     fn ui(self, ui: &mut Ui) -> Response {
@@ -782,14 +639,38 @@ impl Widget for &mut NoiseGenIntervalGui {
             ui.labeled(LABEL_WIDTH, "X Multiplier", |ui| {
                 let drag = egui::DragValue::new(&mut self.x_mult)
                     .speed(0.01)
-                    .range(0.0..=100.0f32);
+                    .range(0.0..=100.0);
                 resp = resp.union(ui.add(drag));
             });
             ui.labeled(LABEL_WIDTH, "Y Multiplier", |ui| {
                 let drag = egui::DragValue::new(&mut self.y_mult)
                     .speed(0.01)
-                    .range(0.0..=100.0f32);
+                    .range(0.0..=100.0);
                 resp = resp.union(ui.add(drag));
+            });
+            ui.labeled(LABEL_WIDTH, "Low Bound", |ui| {
+                let drag = egui::DragValue::new(&mut self.bounds.low.t)
+                    .speed(0.01)
+                    .range(0.0..=1.0);
+                resp = resp.union(ui.add(drag));
+                let mut cresp = ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Clamp, "Clamp");
+                cresp.join(ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Range, "Range"));
+                cresp.join(ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Cutoff, "Cutoff"));
+                if cresp.changed() {
+                    resp.mark_changed();
+                }
+            });
+            ui.labeled(LABEL_WIDTH, "High Bound", |ui| {
+                let drag = egui::DragValue::new(&mut self.bounds.high.t)
+                    .speed(0.01)
+                    .range(0.0..=1.0);
+                resp = resp.union(ui.add(drag));
+                let mut cresp = ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Clamp, "Clamp");
+                cresp.join(ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Range, "Range"));
+                cresp.join(ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Cutoff, "Cutoff"));
+                if cresp.changed() {
+                    resp.mark_changed();
+                }
             });
             resp
         }).inner
@@ -922,10 +803,6 @@ impl OctaveGen {
     }
 }
 
-pub trait NoiseSampler {
-    fn sample_noise(self, point: Point) -> f64;
-}
-
 impl NoiseSampler for &Simplex {
     fn sample_noise(self, point: Point) -> f64 {
         self.sample(point)
@@ -949,10 +826,6 @@ impl NoiseSampler for &OpenSimplex {
     fn sample_noise(self, point: Point) -> f64 {
         self.get([point.x, point.y])
     }
-}
-
-pub trait ResponseExt {
-    fn join(&mut self, other: Response);
 }
 
 impl ResponseExt for Response {
@@ -993,8 +866,8 @@ impl Default for NoiseGenIntervalGui {
             initial_amplitude: 1.0,
             x_mult: 0.1,
             y_mult: 0.1,
-            low: NoiseBound::clamp(0.),
-            high: NoiseBound::clamp(1.0),
+            bounds: NoiseBounds::new(NoiseBound::clamp(0.), NoiseBound::clamp(1.)),
+            id: next_counter(),
         }
     }
 }
@@ -1033,6 +906,169 @@ impl Default for SimplexGui {
             seed: String::from(""),
             intervals: vec![NoiseGenIntervalGui::default()],
             octave_gen: OctaveGen::default(),
+        }
+    }
+}
+
+impl From<NoiseGenGui> for NoiseGen {
+    fn from(value: NoiseGenGui) -> Self {
+        Self {
+            octave_gen: value.octave_gen,
+            simplexes: value.simplexes.into_iter().filter(|simplex| simplex.enabled).map(|simplex| simplex.into()).collect()
+        }
+    }
+}
+
+impl From<SimplexGui> for Simplex {
+    fn from(value: SimplexGui) -> Self {
+        let seed = make_seed(value.seed);
+        let simplex = OpenSimplex::new(seed);
+        Self {
+            enabled: value.enabled,
+            simplex,
+            intervals: value.intervals.into_iter().filter(|interval| interval.enabled).map(NoiseGenInterval::from).collect(),
+            octave_gen: value.octave_gen,
+        }
+    }
+}
+
+impl From<NoiseGenIntervalGui> for NoiseGenInterval {
+    fn from(value: NoiseGenIntervalGui) -> Self {
+        Self {
+            enabled: value.enabled,
+            spline: if value.spline.enabled {
+                Some(Spline::from_iter(value.spline.spline.into_iter().map(|interp| {
+                    Key::new(interp.x, interp.y, interp.interpolation.into())
+                })))
+            } else {
+                None
+            },
+            octaves: value.octaves,
+            persistence: value.persistence,
+            lacunarity: value.lacunarity,
+            scale: value.scale,
+            initial_amplitude: value.initial_amplitude,
+            x_mult: value.x_mult,
+            y_mult: value.y_mult,
+            bounds: value.bounds,
+        }
+    }
+}
+
+impl Into<splines::Interpolation<f64, f64>> for Interpolation {
+    fn into(self) -> splines::Interpolation<f64, f64> {
+        match self {
+            Interpolation::CatmullRom => splines::Interpolation::CatmullRom,
+            Interpolation::Cosine => splines::Interpolation::Cosine,
+            Interpolation::Linear => splines::Interpolation::Linear,
+        }
+    }
+}
+
+pub trait ResponseExt {
+    fn join(&mut self, other: Response);
+}
+
+pub trait NoiseSampler {
+    fn sample_noise(self, point: Point) -> f64;
+}
+
+trait BoolUiExt: Sized + Copy {
+    fn ui_checkbox(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response;
+
+    fn ui_toggle(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response;
+
+    fn toggle(&mut self) -> bool;
+
+    fn opt<T>(self, value: T) -> Option<T>;
+    fn not_opt<T>(self, value: T) -> Option<T>;
+
+    fn select<T>(self, _true: T, _false: T) -> T;
+}
+
+trait UiExt {
+    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R;
+}
+
+impl BoolUiExt for bool {
+    fn toggle(&mut self) -> bool {
+        let old = *self;
+        *self = !old;
+        old
+    }
+    
+    fn select<T>(self, _true: T, _false: T) -> T {
+        if self {
+            _true
+        } else {
+            _false
+        }
+    }
+
+    fn not_opt<T>(self, value: T) -> Option<T> {
+        if self {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    fn opt<T>(self, value: T) -> Option<T> {
+        if self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    fn ui_checkbox(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
+        ui.checkbox(self, text)
+    }
+
+    fn ui_toggle(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
+        ui.toggle_value(self, text)
+    }
+}
+
+impl UiExt for Ui {
+    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R {
+        let mut add_contents = add_contents;
+        self.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(label_width, ui.spacing().interact_size.y), Sense::hover());
+            let label = egui::widgets::Label::new(text);
+            ui.put(rect, label);
+            add_contents(ui)
+        }).inner
+    }
+}
+
+impl std::ops::Add<Point> for Point {
+    type Output = Self;
+    fn add(self, rhs: Point) -> Self::Output {
+        Self::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+
+impl std::ops::Mul<Point> for f64 {
+    type Output = Point;
+    fn mul(self, rhs: Point) -> Self::Output {
+        Point::new(self * rhs.x, self * rhs.y)
+    }
+}
+
+impl std::ops::Mul<f64> for Point {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self::Output {
+        Self::new(self.x * rhs, self.y * rhs)
+    }
+}
+
+impl std::ops::Sub<Point> for Point {
+    type Output = Self;
+    fn sub(self, rhs: Point) -> Self::Output {
+        Self {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y
         }
     }
 }
