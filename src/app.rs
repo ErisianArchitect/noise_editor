@@ -1,25 +1,75 @@
+#![allow(unused)]
+
+use std::path::Path;
+use std::sync::atomic::AtomicU64;
+
+use egui::*;
+use egui::{Color32, Sense, Vec2};
+use image::Rgb;
+
+fn next_index() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+use crate::noisegen::{NoiseGen, NoiseGenGui, Point};
+
+fn load_image<P: AsRef<Path>>(path: P) -> Result<egui::ColorImage, image::ImageError> {
+    let image = image::open(path)?;
+    let size = [image.width() as _, image.height() as _];
+    let image_buffer = image.to_rgb8();
+    let pixels = image_buffer.as_flat_samples();
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()))
+}
+
+fn convert_image_rgb(image: image::RgbImage) -> egui::ColorImage {
+    let size = [image.width() as _, image.height() as _];
+    let pixels = image.as_flat_samples();
+    egui::ColorImage::from_rgb(size, pixels.as_slice())
+}
+
+fn convert_image_rgba(image: image::RgbaImage) -> egui::ColorImage {
+    let size = [image.width() as _, image.height() as _];
+    let pixels = image.as_flat_samples();
+    egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
+}
+
+fn generate_grayscale_noise(noise_gui: &NoiseGenGui) -> image::RgbImage {
+    let mut img = image::RgbImage::new(128, 128);
+    let noise_gen: NoiseGen = noise_gui.clone().into();
+    for y in 0..128 {
+        for x in 0..128 {
+            let fx = x as f64 + 0.5;
+            let fy = y as f64 + 0.5;
+            let noise = noise_gen.sample(Point::new(fx, fy));
+            let grey = (255.0 * noise) as u8;
+            img.put_pixel(x, y, Rgb([grey, grey, grey]));
+        }
+    }
+    img.into()
+}
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
-    // Example stuff:
-    label: String,
-
-    #[serde(skip)] // This how you opt-out of serialization of a field
-    value: f32,
+pub struct NoiseEditorApp {
+    noisegen_gui: NoiseGenGui,
+    auto_generate: bool,
+    #[serde(skip)]
+    texture: Option<TextureHandle>,
 }
 
-impl Default for TemplateApp {
+impl Default for NoiseEditorApp {
     fn default() -> Self {
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
-            value: 2.7,
+            auto_generate: false,
+            noisegen_gui: NoiseGenGui::default(),
+            texture: None,
         }
     }
 }
 
-impl TemplateApp {
+impl NoiseEditorApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -35,7 +85,7 @@ impl TemplateApp {
     }
 }
 
-impl eframe::App for TemplateApp {
+impl eframe::App for NoiseEditorApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
@@ -45,10 +95,9 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
-
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
-
+            
             egui::menu::bar(ui, |ui| {
                 // NOTE: no File->Quit on web pages!
                 let is_web = cfg!(target_arch = "wasm32");
@@ -60,50 +109,47 @@ impl eframe::App for TemplateApp {
                     });
                     ui.add_space(16.0);
                 }
-
-                egui::widgets::global_dark_light_mode_buttons(ui);
+                
+                // egui::widgets::global_dark_light_mode_buttons(ui);
             });
         });
-
+        
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
-
             ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
-
-            ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                self.value += 1.0;
-            }
-
-            ui.separator();
-
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
-                egui::warn_if_debug_build(ui);
+                ui.group(|ui| {
+                    egui::Frame::canvas(ui.style()).fill(Color32::BLACK).show(ui, |ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(512.), Sense::hover());
+                        ui.allocate_ui_at_rect(rect, |ui| {
+                            let painter = ui.painter();
+                            if let Some(tex) = &self.texture {
+                                painter.image(tex.id(), rect, Rect::from_min_max(Pos2::new(0., 0.), Pos2::new(1., 1.)), Color32::WHITE);
+                            }
+                            for i in 0..8 {
+                                let n = i as f32 * (512. / 8.);
+                                painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
+                                painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
+                            }
+                        });
+                    });
+                    
+                });
+                ui.vertical(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
+                        let button = egui::Button::new("Generate Noise").rounding(Rounding::ZERO);
+                        if ui.put(rect, button).clicked() {
+                            let img = generate_grayscale_noise(&self.noisegen_gui);
+                            let colorimg = convert_image_rgb(img);
+                            self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                        }
+                    ui.checkbox(&mut self.auto_generate, "Auto Generate");
+                    let resp = self.noisegen_gui.ui(ui);
+                    if self.auto_generate && resp.changed() {
+                        let img = generate_grayscale_noise(&self.noisegen_gui);
+                        let colorimg = convert_image_rgb(img);
+                        self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                    }
+                });
             });
         });
     }
-}
-
-fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Powered by ");
-        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
-        );
-        ui.label(".");
-    });
 }
