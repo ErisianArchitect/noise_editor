@@ -15,6 +15,7 @@ struct NoiseLayer {
     noise: f64,
     amplitude: f64,
     frequency: f64
+    
 }
 
 impl NoiseLayer {

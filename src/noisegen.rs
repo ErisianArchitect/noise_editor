@@ -1,12 +1,14 @@
 #![allow(unused)]
 use core::f32;
-use std::sync::atomic::AtomicU64;
+use std::{default, sync::atomic::AtomicU64};
 
+use itertools::Itertools;
 use noise::{NoiseFn, OpenSimplex};
 use rand::{RngCore, SeedableRng};
+use serde::{de::Visitor, ser::{SerializeSeq, SerializeStruct}};
 use sha2::{Sha256, digest::Update, Digest};
 use egui::*;
-use splines::{Key, Spline};
+use splines::{spline::KeyMut, Key, Spline};
 
 // let mut hasher = Sha256::default();
 // Digest::update(&mut hasher, b"Hello, world");
@@ -28,9 +30,26 @@ fn make_seed<T: AsRef<[u8]>>(bytes: T) -> u32 {
     rng.next_u32()
 }
 
-fn next_id() -> u64 {
+fn next_id() -> Id {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    const BUFFER: &'static [u8] = b"next_id---id:>        ";
+    let mut buffer: [u8; 22] = [0u8; 22];
+    buffer.copy_from_slice(&BUFFER);
+    let next_index = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let bytes = next_index.to_ne_bytes();
+    buffer[14..22].copy_from_slice(&bytes);
+    Id::new(bytes)
+}
+
+fn next_key_id() -> Id {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const BUFFER: &'static [u8] = b"next_key_id---id:>        ";
+    let mut buffer: [u8; 26] = [0u8; 26];
+    buffer.copy_from_slice(&BUFFER);
+    let next_index = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let bytes = next_index.to_ne_bytes();
+    buffer[18..26].copy_from_slice(&bytes);
+    Id::new(bytes)
 }
 
 fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence: f64, lacunarity: f64, scale: f64) -> f64 {
@@ -280,26 +299,129 @@ impl NoiseBound {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+pub struct DefId(Id);
+
+impl Default for DefId {
+    fn default() -> Self {
+        Self(next_key_id())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+struct InterpKey {
+    x: f64,
+    y: f64,
+    interpolation: Interpolation,
+    #[serde(skip, default)]
+    id: DefId,
+}
+
+impl InterpKey {
+    fn new(x: f64, y: f64, interpolation: Interpolation) -> Self {
+        Self {
+            x,
+            y,
+            interpolation,
+            id: DefId::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+struct SplineId(Id);
+
+impl Default for SplineId {
+    fn default() -> Self {
+        Self(next_id())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SerSpline {
+    spline: splines::Spline<f64, f64>,
+}
+
+impl Default for SerSpline {
+    fn default() -> Self {
+        Self {
+            spline: splines::Spline::from_vec(vec![
+                Key::new(0.0, 0.0, splines::Interpolation::CatmullRom),
+                Key::new(0.0, 0.0, splines::Interpolation::CatmullRom),
+                Key::new(1.0, 1.0, splines::Interpolation::CatmullRom),
+                Key::new(1.0, 1.0, splines::Interpolation::CatmullRom)
+            ])
+        }
+    }
+}
+
+impl serde::Serialize for SerSpline {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+    S: serde::Serializer {
+        let mut state = serializer.serialize_seq(Some(self.spline.len()))?;
+        for i in 0..self.spline.keys().len() {
+            let key = self.spline.get(i).unwrap();
+            let interp_key = InterpKey::new(key.t, key.value, match key.interpolation {
+                splines::Interpolation::Linear => Interpolation::Linear,
+                splines::Interpolation::Cosine => Interpolation::Cosine,
+                splines::Interpolation::CatmullRom => Interpolation::CatmullRom,
+                _ => unreachable!(),
+            });
+            state.serialize_element(&interp_key)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SerSpline {
+
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+    D: serde::Deserializer<'de> {
+        struct SerSplineVisitor;
+        impl<'de> Visitor<'de> for SerSplineVisitor {
+            type Value = SerSpline;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("spline")
+            }
+
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+            A: serde::de::SeqAccess<'de>, {
+                let mut seq = seq;
+                let mut keys = Vec::<Key<f64, f64>>::new();
+                while let Some(next) = seq.next_element::<InterpKey>()? {
+                    keys.push(Key::new(next.x, next.y, next.interpolation.into()));
+                }
+                Ok(SerSpline {
+                    spline: splines::Spline::from_vec(keys),
+                })
+            }
+        }
+        deserializer.deserialize_seq(SerSplineVisitor)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
 pub struct SplineGui {
     enabled: bool,
-    keys: Vec<(f64, f64, Interpolation)>,
-    #[serde(skip)]
-    id: u64,
+    spline: Vec<InterpKey>,
+    #[serde(skip, default)]
+    id: SplineId,
 }
 
 impl Default for SplineGui {
     fn default() -> Self {
         Self {
             enabled: false,
-            keys: vec![
-                (0., 0., Interpolation::CatmullRom),
-                (0.25, 0., Interpolation::CatmullRom),
-                (0.75, 1., Interpolation::CatmullRom),
-                (1., 1., Interpolation::CatmullRom)
+            spline: vec![
+                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
+                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
+                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
+                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
             ],
-            id: next_id(),
+            id: SplineId(next_id()),
         }
     }
 }
@@ -337,7 +459,7 @@ impl Default for NoiseGenIntervalGui {
 
 pub struct NoiseGenInterval {
     enabled: bool,
-    keys: Option<Spline<f64, f64>>,
+    spline: Option<Spline<f64, f64>>,
     octaves: u32,
     persistence: f64,
     lacunarity: f64,
@@ -352,9 +474,10 @@ impl From<NoiseGenIntervalGui> for NoiseGenInterval {
     fn from(value: NoiseGenIntervalGui) -> Self {
         Self {
             enabled: value.enabled,
-            keys: if value.spline.enabled {
-                Some(Spline::from_iter(value.spline.keys.into_iter()
-                    .map(|key| Key::new(key.0 as f64, key.0, key.2.into()))))
+            spline: if value.spline.enabled {
+                Some(Spline::from_iter(value.spline.spline.into_iter().map(|interp| {
+                    Key::new(interp.x, interp.y, interp.interpolation.into())
+                })))
             } else {
                 None
             },
@@ -404,8 +527,8 @@ impl NoiseGenInterval {
         let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
         let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale);
         let gradient = (noise + 1.) * 0.5;
-        let gradient = if let Some(keys) = &self.keys {
-            keys.sample(gradient).expect("Failed to sample spline.")
+        let gradient = if let Some(spline) = &self.spline {
+            spline.sample(gradient).unwrap_or(gradient)
         } else {
             gradient
         };
@@ -585,11 +708,11 @@ impl Widget for &mut SplineGui {
         // Let me see what it looks like at a certain size first.
         let resp = CollapsingHeader::new("Spline")
             .default_open(self.enabled)
-            .id_source(format!("$#%@#% Hopefully this doesn't collide {}", self.id))
+            .id_source(self.id.0)
             .show(ui, |ui| {
                 egui::Frame::dark_canvas(ui.style()).rounding(Rounding::ZERO)
                 .show(ui, |ui| {
-                        let (rect, _) = ui.allocate_exact_size(vec2(410.0, 210.0), Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(vec2(410.0, 210.0), Sense::click());
                         let inner_rect = rect.shrink(5.0);
                         let point_transformer = |x: f64, y: f64| {
                             let y = -y + 1.0;
@@ -609,57 +732,124 @@ impl Widget for &mut SplineGui {
                         };
                         
                         ui.allocate_ui_at_rect(rect, |ui| {
-                            let mut draw_key = |key: &mut (f64, f64, Interpolation), bounds: Rect| {
-                                let p = point_transformer(key.0, key.1);
+                            let mut resp = ui.allocate_rect(inner_rect, Sense::click());
+                            
+                            let mut draw_key = |key: &mut InterpKey, bounds: Rect, remove: Option<&mut bool>| {
+                                let p = point_transformer(key.x, key.y);
                                 let prect = Rect::from_center_size(p, Vec2::splat(10.0));
-                                let resp = ui.allocate_rect(prect, Sense::click_and_drag());
-                                let color = resp.hovered().select(Color32::WHITE, Color32::from_rgb(175, 175, 175));
-                                if resp.dragged() {
-                                    let pointer = ui.input(|i| i.pointer.hover_pos());
-                                    if let Some(pointer) = pointer {
-                                        let clamped = pointer.clamp(bounds.min, bounds.max);
-                                        let new_key = key_transformer(clamped);
-                                        key.0 = new_key.0;
-                                        key.1 = new_key.1;
-                                        // ui.painter().circle_filled(clamped, 5.0, Color32::RED);
+                                ui.push_id(next_id(), |ui| {
+                                    let mut presp = ui.allocate_rect(prect, Sense::click_and_drag());
+                                    let color = presp.hovered().select(Color32::WHITE, Color32::from_rgb(175, 175, 175));
+                                    if presp.dragged() {
+                                        let pointer = ui.input(|i| i.pointer.hover_pos());
+                                        if let Some(pointer) = pointer {
+                                            let clamped = pointer.clamp(bounds.min, bounds.max);
+                                            let new_key = key_transformer(clamped);
+                                            if new_key.0 != key.x && new_key.1 != key.y {
+                                                key.x = new_key.0;
+                                                key.y = new_key.1;
+                                                presp.mark_changed();
+                                            }
+                                        }
+                                    } else {
+                                        let mut v = false;
+                                        presp.context_menu(|ui| {
+                                            if let Some(remove) = remove {
+                                                if ui.button("Remove").clicked() {
+                                                    *remove = true;
+                                                    ui.close_menu();
+                                                    v = true;
+                                                }
+                                            }
+                                            if key.interpolation != Interpolation::CatmullRom
+                                            && ui.button("CatmullRom").clicked() {
+                                                key.interpolation = Interpolation::CatmullRom;
+                                                ui.close_menu();
+                                            }
+                                            if key.interpolation != Interpolation::Cosine
+                                            && ui.button("Cosine").clicked() {
+                                                key.interpolation = Interpolation::Cosine;
+                                                ui.close_menu();
+                                            }
+                                            if key.interpolation != Interpolation::Linear
+                                            && ui.button("Linear").clicked() {
+                                                key.interpolation = Interpolation::Linear;
+                                                ui.close_menu();
+                                            }
+                                        });
+                                        if v {
+                                            presp.mark_changed();
+                                        }
                                     }
-                                }
-                                ui.painter().circle_filled(p, 5.0, color);
-                                resp
+                                    ui.painter().circle_filled(p, 5.0, color);
+                                    presp
+                                }).inner
                             };
-                            let max = point_transformer(self.keys[1].0, 0.0);
+                            let max = point_transformer(self.spline[1].x, 0.0);
                             let min = point_transformer(0.0, 1.0);
                             let bounds = Rect::from_min_max(min, max);
-                            draw_key(&mut self.keys[0], bounds);
+                            let mut draw_resp = draw_key(&mut self.spline[0], bounds, None);
                             let max = point_transformer(1.0, 0.0);
-                            let min = point_transformer(self.keys[self.keys.len() - 2].0, 1.0);
+                            let min = point_transformer(self.spline[self.spline.len() - 2].x, 1.0);
                             let bounds = Rect::from_min_max(min, max);
-                            let end_index = self.keys.len() - 1;
-                            draw_key(&mut self.keys[end_index], bounds);
-
-                            for i in 1..self.keys.len() - 1 {
-                                let min = point_transformer(self.keys[i - 1].0, 1.0);
-                                let max = point_transformer(self.keys[i + 1].0, 0.0);
+                            let end_index = self.spline.len() - 1;
+                            draw_resp.join(draw_key(&mut self.spline[end_index], bounds, None));
+                            let mut remove_index = None;
+                            for i in 1..self.spline.len() - 1 {
+                                let min = point_transformer(self.spline[i - 1].x, 1.0);
+                                let max = point_transformer(self.spline[i + 1].x, 0.0);
                                 let bounds = Rect::from_min_max(min, max);
-                                draw_key(&mut self.keys[i], bounds);
+                                let mut remove = false;
+                                let some_rem = if i > 1 && i < self.spline.len() - 2 {
+                                    Some(&mut remove)
+                                } else {
+                                    None
+                                };
+                                draw_resp.join(draw_key(&mut self.spline[i], bounds, some_rem));
+                                if remove {
+                                    remove_index.replace(i);
+                                }
                             }
-                            let spline = splines::Spline::from_iter(self.keys.iter().cloned().map(|key| {
-                                Key::new(key.0, key.1, match key.2 {
-                                    Interpolation::CatmullRom => splines::Interpolation::CatmullRom,
-                                    Interpolation::Cosine => splines::Interpolation::Cosine,
-                                    Interpolation::Linear => splines::Interpolation::Linear,
-                                })
+                            if let Some(index) = remove_index {
+                                self.spline.remove(index);
+                            }
+                            if !(draw_resp.hovered() || draw_resp.dragged()) {
+                                if resp.clicked() && ! resp.dragged() {
+                                    draw_resp.mark_changed();
+                                    let pointer = ui.input(|i| i.pointer.hover_pos());
+                                    if let Some(pointer) = pointer {
+                                        if inner_rect.contains(pointer) {
+                                            let (x, y) = key_transformer(pointer);
+                                            // find the keys that x exists between
+                                            for i in 1..self.spline.len() {
+                                                let left = self.spline[i - 1].x;
+                                                let right = self.spline[i].x;
+                                                if x >= left && x < right {
+                                                    self.spline.insert(i, InterpKey::new(x, y, Interpolation::CatmullRom));
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if draw_resp.dragged() {
+                                draw_resp.mark_changed();
+                            }
+                            let spline = splines::Spline::from_iter(self.spline.iter().cloned().map(|interp| {
+                                Key::new(interp.x, interp.y, interp.interpolation.into())
                             }));
                             let x = 0 as f32 + inner_rect.left();
-                            let i_mult = inner_rect.width() / 200.0;
-                            let t = 0 as f64 / 200.0;
+                            const SAMPLES: u32 = 150;
+                            const SAMPDIV: f64 = SAMPLES as f64;
+                            let i_mult = inner_rect.width() / SAMPDIV as f32;
+                            let t = 0 as f64 / SAMPDIV;
                             let y = spline.sample(t).unwrap_or_default();
                             let y = -y + 1.0;
                             let y = y as f32 * inner_rect.height() + inner_rect.top();
                             let mut previous = Pos2::new(x, y);
-                            for i in 1..=200 {
+                            for i in 1..=SAMPLES {
                                 let x = i as f32 * i_mult + inner_rect.left();
-                                let t = i as f64 / 200.0;
+                                let t = i as f64 / SAMPDIV;
                                 let y = spline.sample(t).unwrap_or_default();
                                 let y = -y + 1.0;
                                 let y = y as f32 * inner_rect.height() + inner_rect.top();
@@ -667,25 +857,19 @@ impl Widget for &mut SplineGui {
                                 ui.painter().line_segment([previous, current], Stroke::new(1.0, Color32::WHITE));
                                 previous = current;
                             }
-                            // for (x, y, interp) in self.keys.iter().cloned() {
-                            //     let p = point_transformer(x, y);
-                            //     let prect = Rect::from_center_size(p, Vec2::splat(10.0));
-                            //     let resp = ui.allocate_rect(prect, Sense::click_and_drag());
-                            //     let color = resp.hovered().select(Color32::WHITE, Color32::from_rgb(175, 175, 175));
-                            //     if resp.dragged() {
-                            //         let pointer = ui.input(|i| i.pointer.hover_pos());
-                            //         if let Some(pointer) = pointer {
-                            //             ui.painter().circle_filled(pointer, 5.0, Color32::RED);
-                            //         }
-                            //     }
-                            //     ui.painter().circle_filled(p, 5.0, color);
-                            // }
-                        });
-                    });
-                ui.allocate_response(Vec2::ZERO, Sense::hover())
+                            resp.union(draw_resp)
+                        }).inner
+                    }).inner
             });
+        let old_enabled = self.enabled;
         self.enabled = !resp.fully_closed();
-        resp.body_response.unwrap_or_else(|| ui.allocate_response(Vec2::ZERO, Sense::hover()))
+        let mut resp = resp.body_returned.unwrap_or_else(|| {
+            ui.allocate_response(Vec2::ZERO, Sense::hover())
+        });
+        if old_enabled != self.enabled {
+            resp.mark_changed();
+        }
+        resp
     }
 }
 
@@ -697,7 +881,7 @@ impl Widget for &mut NoiseGenIntervalGui {
                 ui.disable();
             }
             // ui.label(RichText::from("TODO: Add Spline Editor").color(Color32::RED).strong());
-            ui.add(&mut self.spline);
+            resp.join(ui.add(&mut self.spline));
             ui.labeled(LABEL_WIDTH, "Octaves", |ui| {
                 let drag = egui::DragValue::new(&mut self.octaves)
                     .speed(0.1)
