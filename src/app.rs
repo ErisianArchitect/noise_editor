@@ -115,7 +115,7 @@ impl eframe::App for NoiseEditorApp {
         });
         
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 ui.group(|ui| {
                     egui::Frame::canvas(ui.style()).fill(Color32::BLACK).show(ui, |ui| {
                         let (rect, _) = ui.allocate_exact_size(Vec2::splat(512.), Sense::hover());
@@ -135,12 +135,27 @@ impl eframe::App for NoiseEditorApp {
                 });
                 ui.vertical(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
-                        let button = egui::Button::new("Generate Noise").rounding(Rounding::ZERO);
-                        if ui.put(rect, button).clicked() {
-                            let img = generate_grayscale_noise(&self.noisegen_gui);
-                            let colorimg = convert_image_rgb(img);
-                            self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                    let button = egui::Button::new("Save").rounding(Rounding::ZERO);
+                    if ui.put(rect, button).clicked() {
+                        let img = generate_grayscale_noise(&self.noisegen_gui);
+                        let save_file = rfd::FileDialog::new()
+                            .add_filter("png", &["png"])
+                            .set_file_name("output")
+                            .set_directory(std::env::current_dir().unwrap())
+                            .save_file();
+                        if let Some(path) = save_file {
+                            img.save(path);
                         }
+    
+                    }
+    
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
+                    let button = egui::Button::new("Generate Noise").rounding(Rounding::ZERO);
+                    if ui.put(rect, button).clicked() {
+                        let img = generate_grayscale_noise(&self.noisegen_gui);
+                        let colorimg = convert_image_rgb(img);
+                        self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                    }
                     ui.checkbox(&mut self.auto_generate, "Auto Generate");
                     let resp = self.noisegen_gui.ui(ui);
                     if self.auto_generate && resp.changed() {

@@ -2,4 +2,5 @@
 
 mod app;
 mod noisegen;
+mod gen;
 pub use app::NoiseEditorApp;
