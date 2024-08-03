@@ -124,8 +124,8 @@ impl eframe::App for NoiseEditorApp {
                             if let Some(tex) = &self.texture {
                                 painter.image(tex.id(), rect, Rect::from_min_max(Pos2::new(0., 0.), Pos2::new(1., 1.)), Color32::WHITE);
                             }
-                            for i in 0..8 {
-                                let n = i as f32 * (512. / 8.);
+                            for i in 0..16 {
+                                let n = i as f32 * (512. / 16.);
                                 painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
                                 painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
                             }

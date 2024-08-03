@@ -52,10 +52,10 @@ fn next_key_id() -> Id {
     Id::new(bytes)
 }
 
-fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence: f64, lacunarity: f64, scale: f64) -> f64 {
+fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence: f64, lacunarity: f64, scale: f64, initial_amplitude: f64) -> f64 {
     let mut total = 0.0;
     let mut frequency = scale;
-    let mut amplitude = 1.0;
+    let mut amplitude = initial_amplitude;
     let mut max_value = 1.0;
     let mut scale = 1.0;
     for _ in 0..octaves {
@@ -371,6 +371,7 @@ pub struct NoiseGenIntervalGui {
     persistence: f64,
     lacunarity: f64,
     scale: f64,
+    initial_amplitude: f64,
     x_mult: f64,
     y_mult: f64,
     low: NoiseBound,
@@ -386,6 +387,7 @@ impl Default for NoiseGenIntervalGui {
             persistence: 0.5,
             lacunarity: 2.0,
             scale: 0.5,
+            initial_amplitude: 1.0,
             x_mult: 0.1,
             y_mult: 0.1,
             low: NoiseBound::Clamp(0.),
@@ -401,6 +403,7 @@ pub struct NoiseGenInterval {
     persistence: f64,
     lacunarity: f64,
     scale: f64,
+    initial_amplitude: f64,
     x_mult: f64,
     y_mult: f64,
     low: NoiseBound,
@@ -422,6 +425,7 @@ impl From<NoiseGenIntervalGui> for NoiseGenInterval {
             persistence: value.persistence,
             lacunarity: value.lacunarity,
             scale: value.scale,
+            initial_amplitude: value.initial_amplitude,
             x_mult: value.x_mult,
             y_mult: value.y_mult,
             low: value.low,
@@ -462,7 +466,7 @@ impl From<NoiseGenGui> for NoiseGen {
 impl NoiseGenInterval {
     pub fn sample(&self, simplex: &OpenSimplex, point: Point) -> f64 {
         let point = Point::new(point.x * self.x_mult * 0.01, point.y * self.y_mult * 0.01);
-        let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale);
+        let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale, self.initial_amplitude);
         let gradient = (noise + 1.) * 0.5;
         let gradient = if let Some(spline) = &self.spline {
             spline.sample(gradient).unwrap_or(gradient)
@@ -740,7 +744,7 @@ impl Widget for &mut SplineGui {
                             let min = point_transformer(self.spline[self.spline.len() - 2].x, 1.0);
                             let bounds = Rect::from_min_max(min, max);
                             let end_index = self.spline.len() - 1;
-                            draw_resp.join(draw_key(&mut self.spline[end_index], bounds, None));
+                            draw_resp = draw_resp.union(draw_key(&mut self.spline[end_index], bounds, None));
                             let mut remove_index = None;
                             for i in 1..self.spline.len() - 1 {
                                 let min = point_transformer(self.spline[i - 1].x, 1.0);
@@ -752,7 +756,7 @@ impl Widget for &mut SplineGui {
                                 } else {
                                     None
                                 };
-                                draw_resp.join(draw_key(&mut self.spline[i], bounds, some_rem));
+                                draw_resp = draw_resp.union(draw_key(&mut self.spline[i], bounds, some_rem));
                                 if remove {
                                     remove_index.replace(i);
                                 }
@@ -828,7 +832,7 @@ impl Widget for &mut NoiseGenIntervalGui {
                 ui.disable();
             }
             // ui.label(RichText::from("TODO: Add Spline Editor").color(Color32::RED).strong());
-            resp.join(ui.add(&mut self.spline));
+            resp = resp.union(ui.add(&mut self.spline));
             ui.labeled(LABEL_WIDTH, "Octaves", |ui| {
                 let drag = egui::DragValue::new(&mut self.octaves)
                     .speed(0.1)
@@ -850,6 +854,12 @@ impl Widget for &mut NoiseGenIntervalGui {
                 let drag = egui::DragValue::new(&mut self.scale)
                     .speed(0.0025)
                     .range(0.0..=16.0);
+                resp = resp.union(ui.add(drag));
+            });
+            ui.labeled(LABEL_WIDTH, "Initial Amplitude", |ui| {
+                let drag = DragValue::new(&mut self.initial_amplitude)
+                    .speed(0.01)
+                    .range(0.01..=30.0);
                 resp = resp.union(ui.add(drag));
             });
             ui.labeled(LABEL_WIDTH, "X Multiplier", |ui| {
@@ -877,9 +887,9 @@ impl SimplexGui {
             ui.disable();
         }
         ui.labeled(LABEL_WIDTH, "Seed", |ui| {
-            resp.join(ui.text_edit_singleline(&mut self.seed));
+            resp = resp.union(ui.text_edit_singleline(&mut self.seed));
         });
-        resp.join(ui.add(&mut self.octave_gen));
+        resp = resp.union(ui.add(&mut self.octave_gen));
         if ui.button("Add Interval").clicked() {
             self.intervals.push(NoiseGenIntervalGui::default());
             resp.mark_changed();
@@ -891,7 +901,7 @@ impl SimplexGui {
                     if ui.button("Remove Interval").clicked() {
                         remove_index.replace(index);
                     }
-                    resp.join(interval.ui(ui));
+                    resp = resp.union(interval.ui(ui));
                 });
             });
             if let Some(index) = remove_index {
@@ -905,8 +915,7 @@ impl SimplexGui {
 
 impl Widget for &mut NoiseGenGui {
     fn ui(self, ui: &mut Ui) -> Response {
-        let mut resp = ui.allocate_response(Vec2::ZERO, Sense::hover());
-        resp.join(ui.add(&mut self.octave_gen));
+        let mut resp = ui.add(&mut self.octave_gen);
         if ui.button("Add Simplex").clicked() {
             self.simplexes.push(SimplexGui::default());
             resp.mark_changed();
@@ -922,7 +931,7 @@ impl Widget for &mut NoiseGenGui {
                             if ui.button("Remove Simplex").clicked() {
                                 remove_index.replace(index);
                             }
-                            resp.join(simplex.ui(index, ui));
+                            resp = resp.union(simplex.ui(index, ui));
                         });
                     });
                     if let Some(index) = remove_index {
