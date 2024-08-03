@@ -35,10 +35,10 @@ fn convert_image_rgba(image: image::RgbaImage) -> egui::ColorImage {
 }
 
 fn generate_grayscale_noise(noise_gui: &NoiseGenGui) -> image::RgbImage {
-    let mut img = image::RgbImage::new(128, 128);
+    let mut img = image::RgbImage::new(256, 256);
     let noise_gen: NoiseGen = noise_gui.clone().into();
-    for y in 0..128 {
-        for x in 0..128 {
+    for y in 0..256 {
+        for x in 0..256 {
             let fx = x as f64 + 0.5;
             let fy = y as f64 + 0.5;
             let noise = noise_gen.sample(Point::new(fx, fy));

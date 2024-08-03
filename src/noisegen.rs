@@ -57,14 +57,17 @@ fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence:
     let mut frequency = scale;
     let mut amplitude = 1.0;
     let mut max_value = 1.0;
+    let mut scale = 1.0;
     for _ in 0..octaves {
         let noise_value = noise_fn.get([point.x * frequency, point.y * frequency]);
-        total += noise_value * amplitude;
+        total += scale * noise_value * amplitude;
+        scale *= 0.5;
         max_value += amplitude;
         frequency *= lacunarity;
         amplitude *= persistence;
     }
-    total / max_value
+    // total / max_value
+    total
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -337,72 +340,6 @@ impl Default for SplineId {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SerSpline {
-    spline: splines::Spline<f64, f64>,
-}
-
-impl Default for SerSpline {
-    fn default() -> Self {
-        Self {
-            spline: splines::Spline::from_vec(vec![
-                Key::new(0.0, 0.0, splines::Interpolation::CatmullRom),
-                Key::new(0.0, 0.0, splines::Interpolation::CatmullRom),
-                Key::new(1.0, 1.0, splines::Interpolation::CatmullRom),
-                Key::new(1.0, 1.0, splines::Interpolation::CatmullRom)
-            ])
-        }
-    }
-}
-
-impl serde::Serialize for SerSpline {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-    S: serde::Serializer {
-        let mut state = serializer.serialize_seq(Some(self.spline.len()))?;
-        for i in 0..self.spline.keys().len() {
-            let key = self.spline.get(i).unwrap();
-            let interp_key = InterpKey::new(key.t, key.value, match key.interpolation {
-                splines::Interpolation::Linear => Interpolation::Linear,
-                splines::Interpolation::Cosine => Interpolation::Cosine,
-                splines::Interpolation::CatmullRom => Interpolation::CatmullRom,
-                _ => unreachable!(),
-            });
-            state.serialize_element(&interp_key)?;
-        }
-        state.end()
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SerSpline {
-
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-    D: serde::Deserializer<'de> {
-        struct SerSplineVisitor;
-        impl<'de> Visitor<'de> for SerSplineVisitor {
-            type Value = SerSpline;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("spline")
-            }
-
-            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
-            where
-            A: serde::de::SeqAccess<'de>, {
-                let mut seq = seq;
-                let mut keys = Vec::<Key<f64, f64>>::new();
-                while let Some(next) = seq.next_element::<InterpKey>()? {
-                    keys.push(Key::new(next.x, next.y, next.interpolation.into()));
-                }
-                Ok(SerSpline {
-                    spline: splines::Spline::from_vec(keys),
-                })
-            }
-        }
-        deserializer.deserialize_seq(SerSplineVisitor)
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SplineGui {
     enabled: bool,
@@ -524,7 +461,7 @@ impl From<NoiseGenGui> for NoiseGen {
 
 impl NoiseGenInterval {
     pub fn sample(&self, simplex: &OpenSimplex, point: Point) -> f64 {
-        let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
+        let point = Point::new(point.x * self.x_mult * 0.01, point.y * self.y_mult * 0.01);
         let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale);
         let gradient = (noise + 1.) * 0.5;
         let gradient = if let Some(spline) = &self.spline {
@@ -754,6 +691,7 @@ impl Widget for &mut SplineGui {
                                     } else {
                                         let mut v = false;
                                         presp.context_menu(|ui| {
+                                            ui.allocate_exact_size(Vec2::new(150.0, 0.0), Sense::hover());
                                             if let Some(remove) = remove {
                                                 if ui.button("Remove").clicked() {
                                                     *remove = true;
@@ -761,21 +699,30 @@ impl Widget for &mut SplineGui {
                                                     v = true;
                                                 }
                                             }
-                                            if key.interpolation != Interpolation::CatmullRom
-                                            && ui.button("CatmullRom").clicked() {
-                                                key.interpolation = Interpolation::CatmullRom;
+                                            if ui.selectable_value(&mut key.interpolation, Interpolation::CatmullRom, "CatmullRom").changed() {
                                                 ui.close_menu();
                                             }
-                                            if key.interpolation != Interpolation::Cosine
-                                            && ui.button("Cosine").clicked() {
-                                                key.interpolation = Interpolation::Cosine;
+                                            if ui.selectable_value(&mut key.interpolation, Interpolation::Cosine, "Cosine").changed() {
                                                 ui.close_menu();
                                             }
-                                            if key.interpolation != Interpolation::Linear
-                                            && ui.button("Linear").clicked() {
-                                                key.interpolation = Interpolation::Linear;
+                                            if ui.selectable_value(&mut key.interpolation, Interpolation::Linear, "Linear").changed() {
                                                 ui.close_menu();
                                             }
+                                            // if key.interpolation != Interpolation::CatmullRom
+                                            // && ui.button("CatmullRom").clicked() {
+                                            //     key.interpolation = Interpolation::CatmullRom;
+                                            //     ui.close_menu();
+                                            // }
+                                            // if key.interpolation != Interpolation::Cosine
+                                            // && ui.button("Cosine").clicked() {
+                                            //     key.interpolation = Interpolation::Cosine;
+                                            //     ui.close_menu();
+                                            // }
+                                            // if key.interpolation != Interpolation::Linear
+                                            // && ui.button("Linear").clicked() {
+                                            //     key.interpolation = Interpolation::Linear;
+                                            //     ui.close_menu();
+                                            // }
                                         });
                                         if v {
                                             presp.mark_changed();
@@ -1061,14 +1008,17 @@ impl OctaveGen {
             self.initial_amplitude,
             self.scale
         );
+        let mut scale = 1.0;
         let result = layers.into_iter().fold(init, |mut accum, noise| {
-            accum.noise += accum.amplitude * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency));
+            accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
+            scale *= 0.5;
             accum.total_amplitude += accum.amplitude;
             accum.amplitude *= self.persistence;
             accum.frequency *= self.lacunarity;
             accum
         });
-        result.noise / result.total_amplitude
+        // result.noise / result.total_amplitude
+        result.noise
     }
 }
 
