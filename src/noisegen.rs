@@ -70,10 +70,166 @@ fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence:
     total
 }
 
+
+
+struct NoiseLayer {
+    noise: f64,
+    amplitude: f64,
+    frequency: f64,
+    total_amplitude: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub struct OctaveGen {
+    pub persistence: f64,
+    pub lacunarity: f64,
+    pub initial_amplitude: f64,
+    pub scale: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoiseGen {
+    simplexes: Vec<Simplex>,
+    octave_gen: OctaveGen,
+}
+
+#[derive(Debug, Clone)]
+pub struct Simplex {
+    enabled: bool,
+    simplex: OpenSimplex,
+    intervals: Vec<NoiseGenInterval>,
+    octave_gen: OctaveGen,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoiseGenInterval {
+    enabled: bool,
+    spline: Option<Spline<f64, f64>>,
+    octaves: u32,
+    persistence: f64,
+    lacunarity: f64,
+    scale: f64,
+    initial_amplitude: f64,
+    x_mult: f64,
+    y_mult: f64,
+    low: NoiseBound,
+    high: NoiseBound,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NoiseGenGui {
+    simplexes: Vec<SimplexGui>,
+    octave_gen: OctaveGen,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SimplexGui {
+    enabled: bool,
+    seed: String,
+    intervals: Vec<NoiseGenIntervalGui>,
+    octave_gen: OctaveGen,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NoiseGenIntervalGui {
+    enabled: bool,
+    spline: SplineGui,
+    octaves: u32,
+    persistence: f64,
+    lacunarity: f64,
+    scale: f64,
+    initial_amplitude: f64,
+    x_mult: f64,
+    y_mult: f64,
+    low: NoiseBound,
+    high: NoiseBound,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SplineGui {
+    enabled: bool,
+    spline: Vec<InterpKey>,
+    #[serde(skip, default)]
+    id: SplineId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+struct InterpKey {
+    x: f64,
+    y: f64,
+    interpolation: Interpolation,
+    #[serde(skip, default)]
+    id: DefId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+struct SplineId(Id);
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+pub struct DefId(Id);
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub enum NoiseBoundMode {
+    Clamp,
+    Cutoff,
+    Range,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub struct NoiseBound {
+    pub t: f64,
+    pub mode: NoiseBoundMode,
+}
+
+// #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+// pub enum NoiseBound {
+//     /// Clamp to value
+//     Clamp(f64),
+//     /// When value is beyond threshold, cutoff to zero.
+//     Cutoff(f64),
+//     /// Clamp to value but also normalize range.
+//     Range(f64),
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+enum Interpolation {
+    CatmullRom,
+    Cosine,
+    Linear,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
+}
+
+pub struct SimplexInterval<'a> {
+    simplex: &'a OpenSimplex,
+    interval: &'a NoiseGenInterval,
+}
+
+impl NoiseBound {
+    pub fn clamp(t: f64) -> Self {
+        Self {
+            t,
+            mode: NoiseBoundMode::Clamp
+        }
+    }
+
+    pub fn cutoff(t: f64) -> Self {
+        Self {
+            t,
+            mode: NoiseBoundMode::Cutoff
+        }
+    }
+
+    pub fn range(t: f64) -> Self {
+        Self {
+            t,
+            mode: NoiseBoundMode::Range
+        }
+    }
 }
 
 impl Point {
@@ -130,7 +286,6 @@ impl Point {
     }
 }
 
-
 impl std::ops::Add<Point> for Point {
     type Output = Self;
     fn add(self, rhs: Point) -> Self::Output {
@@ -162,64 +317,6 @@ impl std::ops::Sub<Point> for Point {
     }
 }
 
-#[cfg(test)]
-mod testing_sandbox {
-    use itertools::Itertools;
-
-    // TODO: Remove this sandbox when it is no longer in use.
-    use super::*;
-    #[test]
-    fn sandbox() {
-        // let seed = make_seed("");
-        // println!("{seed}");
-        
-        let keys = vec![
-            Point::new(0.0, 0.0),
-            Point::new(1.0, 1.0),
-            Point::new(2.0, 5.0),
-            Point::new(3.0, 0.0),
-            Point::new(4.0, 8.0)
-        ];
-        let point = Point::new(2.5, 5.0);
-        let mut found: Option<usize> = None;
-        for i in 1..keys.len() {
-            let first = keys[i-1];
-            let second = keys[i];
-            if point.x >= first.x && point.x < second.x {
-                found = Some(i);
-                break;
-            }
-        }
-        println!("{found:?}");
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SimplexGui {
-    enabled: bool,
-    seed: String,
-    intervals: Vec<NoiseGenIntervalGui>,
-    octave_gen: OctaveGen,
-}
-
-impl Default for SimplexGui {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            seed: String::from(""),
-            intervals: vec![NoiseGenIntervalGui::default()],
-            octave_gen: OctaveGen::default(),
-        }
-    }
-}
-
-pub struct Simplex {
-    enabled: bool,
-    simplex: OpenSimplex,
-    intervals: Vec<NoiseGenInterval>,
-    octave_gen: OctaveGen,
-}
-
 impl From<SimplexGui> for Simplex {
     fn from(value: SimplexGui) -> Self {
         let seed = make_seed(value.seed);
@@ -233,13 +330,6 @@ impl From<SimplexGui> for Simplex {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-enum Interpolation {
-    CatmullRom,
-    Cosine,
-    Linear,
-}
-
 impl Into<splines::Interpolation<f64, f64>> for Interpolation {
     fn into(self) -> splines::Interpolation<f64, f64> {
         match self {
@@ -248,76 +338,6 @@ impl Into<splines::Interpolation<f64, f64>> for Interpolation {
             Interpolation::Linear => splines::Interpolation::Linear,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-pub enum NoiseBound {
-    /// Clamp to value
-    Clamp(f64),
-    /// When value is beyond threshold, cutoff to zero.
-    Cutoff(f64),
-    /// Clamp to value but also normalize range.
-    Range(f64),
-}
-
-impl NoiseBound {
-    pub fn value(self) -> f64 {
-        match self {
-            NoiseBound::Clamp(value) => value,
-            NoiseBound::Cutoff(value) => value,
-            NoiseBound::Range(value) => value,
-        }
-    }
-
-    pub fn value_mut(&mut self) -> &mut f64 {
-        match self {
-            NoiseBound::Clamp(value) => value,
-            NoiseBound::Cutoff(value) => value,
-            NoiseBound::Range(value) => value,
-        }
-    }
-
-    pub fn make_clamp(&mut self) {
-        *self = match *self {
-            NoiseBound::Clamp(value) => NoiseBound::Clamp(value),
-            NoiseBound::Cutoff(value) => NoiseBound::Clamp(value),
-            NoiseBound::Range(value) => NoiseBound::Clamp(value),
-        }
-    }
-
-    pub fn make_cutoff(&mut self) {
-        *self = match *self {
-            NoiseBound::Clamp(value) => NoiseBound::Cutoff(value),
-            NoiseBound::Cutoff(value) => NoiseBound::Cutoff(value),
-            NoiseBound::Range(value) => NoiseBound::Cutoff(value),
-        }
-    }
-
-    pub fn make_range(&mut self) {
-        *self = match *self {
-            NoiseBound::Clamp(value) => NoiseBound::Range(value),
-            NoiseBound::Cutoff(value) => NoiseBound::Range(value),
-            NoiseBound::Range(value) => NoiseBound::Range(value),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Hash)]
-pub struct DefId(Id);
-
-impl Default for DefId {
-    fn default() -> Self {
-        Self(next_key_id())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-struct InterpKey {
-    x: f64,
-    y: f64,
-    interpolation: Interpolation,
-    #[serde(skip, default)]
-    id: DefId,
 }
 
 impl InterpKey {
@@ -329,85 +349,6 @@ impl InterpKey {
             id: DefId::default(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Hash)]
-struct SplineId(Id);
-
-impl Default for SplineId {
-    fn default() -> Self {
-        Self(next_id())
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SplineGui {
-    enabled: bool,
-    spline: Vec<InterpKey>,
-    #[serde(skip, default)]
-    id: SplineId,
-}
-
-impl Default for SplineGui {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            spline: vec![
-                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
-                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
-                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
-                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
-            ],
-            id: SplineId(next_id()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct NoiseGenIntervalGui {
-    enabled: bool,
-    spline: SplineGui,
-    octaves: u32,
-    persistence: f64,
-    lacunarity: f64,
-    scale: f64,
-    initial_amplitude: f64,
-    x_mult: f64,
-    y_mult: f64,
-    low: NoiseBound,
-    high: NoiseBound,
-}
-
-impl Default for NoiseGenIntervalGui {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            spline: SplineGui::default(),
-            octaves: 4,
-            persistence: 0.5,
-            lacunarity: 2.0,
-            scale: 0.5,
-            initial_amplitude: 1.0,
-            x_mult: 0.1,
-            y_mult: 0.1,
-            low: NoiseBound::Clamp(0.),
-            high: NoiseBound::Clamp(1.0),
-        }
-    }
-}
-
-pub struct NoiseGenInterval {
-    enabled: bool,
-    spline: Option<Spline<f64, f64>>,
-    octaves: u32,
-    persistence: f64,
-    lacunarity: f64,
-    scale: f64,
-    initial_amplitude: f64,
-    x_mult: f64,
-    y_mult: f64,
-    low: NoiseBound,
-    high: NoiseBound,
 }
 
 impl From<NoiseGenIntervalGui> for NoiseGenInterval {
@@ -434,26 +375,6 @@ impl From<NoiseGenIntervalGui> for NoiseGenInterval {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct NoiseGenGui {
-    simplexes: Vec<SimplexGui>,
-    octave_gen: OctaveGen,
-}
-
-impl Default for NoiseGenGui {
-    fn default() -> Self {
-        Self {
-            simplexes: vec![SimplexGui::default()],
-            octave_gen: OctaveGen::default(),
-        }
-    }
-}
-
-pub struct NoiseGen {
-    simplexes: Vec<Simplex>,
-    octave_gen: OctaveGen,
-}
-
 impl From<NoiseGenGui> for NoiseGen {
     fn from(value: NoiseGenGui) -> Self {
         Self {
@@ -473,61 +394,67 @@ impl NoiseGenInterval {
         } else {
             gradient
         };
-        use NoiseBound::*;
-        match (self.low, self.high) {
-            (Range(low), Range(high)) => {
+        use NoiseBoundMode::*;
+        match (self.low.mode, self.high.mode) {
+            (Range, Range) => {
+                let low = self.low.t;
+                let high = self.high.t;
                 let clamped = gradient.max(low).min(high);
                 let diff = high - low;
                 let rel = clamped - low;
                 rel * (1. / diff)
             }
-            (Range(low), Clamp(high)) => {
-                let clamped = gradient.max(low).min(high);
+            (Range, Clamp) => {
+                let low = self.low.t;
+                let clamped = gradient.max(low).min(self.high.t);
                 let diff = 1.0 - low;
                 let rel = clamped - low;
                 rel * (1. / diff)
             }
-            (Range(low), Cutoff(high)) => {
-                if gradient > high {
+            (Range, Cutoff) => {
+                if gradient > self.high.t {
                     0.0
                 } else {
+                    let low = self.low.t;
                     let clamped = gradient.max(low);
                     let diff = 1.0 - low;
                     let rel = clamped - low;
                     rel * (1. / diff)
                 }
             }
-            (Clamp(low), Range(high)) => {
-                let clamped = gradient.max(low).min(high);
+            (Clamp, Range) => {
+                let high = self.high.t;
+                let clamped = gradient.max(self.low.t).min(high);
                 clamped * (1. / high)
             }
-            (Clamp(low), Clamp(high)) => {
-                gradient.max(low).min(high)
+            (Clamp, Clamp) => {
+                gradient.max(self.low.t).min(self.high.t)
             }
-            (Clamp(low), Cutoff(high)) => {
-                if gradient > high {
+            (Clamp, Cutoff) => {
+                if gradient > self.high.t {
                     0.
                 } else {
-                    gradient.max(low)
+                    gradient.max(self.low.t)
                 }
             }
-            (Cutoff(low), Range(high)) => {
-                if gradient < low {
+            (Cutoff, Range) => {
+                if gradient < self.low.t {
                     0.
                 } else {
+                    let high = self.high.t;
                     let clamped = gradient.min(high);
                     clamped * (1. / high)
                 }
             }
-            (Cutoff(low), Clamp(high)) => {
-                if gradient < low {
+            (Cutoff, Clamp) => {
+                if gradient < self.low.t {
                     0.
                 } else {
-                    gradient.min(high)
+                    gradient.min(self.high.t)
                 }
             }
-            (Cutoff(low), Cutoff(high)) => {
-                if gradient < low || gradient > high {
+            (Cutoff, Cutoff) => {
+                if gradient < self.low.t || gradient > self.high.t {
                     0.
                 } else {
                     gradient
@@ -703,30 +630,20 @@ impl Widget for &mut SplineGui {
                                                     v = true;
                                                 }
                                             }
-                                            if ui.selectable_value(&mut key.interpolation, Interpolation::CatmullRom, "CatmullRom").changed() {
-                                                ui.close_menu();
-                                            }
-                                            if ui.selectable_value(&mut key.interpolation, Interpolation::Cosine, "Cosine").changed() {
-                                                ui.close_menu();
-                                            }
-                                            if ui.selectable_value(&mut key.interpolation, Interpolation::Linear, "Linear").changed() {
-                                                ui.close_menu();
-                                            }
-                                            // if key.interpolation != Interpolation::CatmullRom
-                                            // && ui.button("CatmullRom").clicked() {
-                                            //     key.interpolation = Interpolation::CatmullRom;
-                                            //     ui.close_menu();
-                                            // }
-                                            // if key.interpolation != Interpolation::Cosine
-                                            // && ui.button("Cosine").clicked() {
-                                            //     key.interpolation = Interpolation::Cosine;
-                                            //     ui.close_menu();
-                                            // }
-                                            // if key.interpolation != Interpolation::Linear
-                                            // && ui.button("Linear").clicked() {
-                                            //     key.interpolation = Interpolation::Linear;
-                                            //     ui.close_menu();
-                                            // }
+                                            ui.group(|ui| {
+                                                if ui.selectable_value(&mut key.interpolation, Interpolation::CatmullRom, "CatmullRom").changed() {
+                                                    v = true;
+                                                    ui.close_menu();
+                                                }
+                                                if ui.selectable_value(&mut key.interpolation, Interpolation::Cosine, "Cosine").changed() {
+                                                    v = true;
+                                                    ui.close_menu();
+                                                }
+                                                if ui.selectable_value(&mut key.interpolation, Interpolation::Linear, "Linear").changed() {
+                                                    v = true;
+                                                    ui.close_menu();
+                                                };
+                                            });
                                         });
                                         if v {
                                             presp.mark_changed();
@@ -974,32 +891,6 @@ impl Widget for &mut OctaveGen {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
-pub struct OctaveGen {
-    pub persistence: f64,
-    pub lacunarity: f64,
-    pub initial_amplitude: f64,
-    pub scale: f64,
-}
-
-impl Default for OctaveGen {
-    fn default() -> Self {
-        Self {
-            persistence: 0.5,
-            lacunarity: 1.0,
-            initial_amplitude: 1.0,
-            scale: 1.0,
-        }
-    }
-}
-
-struct NoiseLayer {
-    noise: f64,
-    amplitude: f64,
-    frequency: f64,
-    total_amplitude: f64,
-}
-
 impl NoiseLayer {
     pub const fn new(amplitude: f64, frequency: f64) -> Self {
         Self {
@@ -1019,36 +910,44 @@ impl OctaveGen {
         );
         let mut scale = 1.0;
         let result = layers.into_iter().fold(init, |mut accum, noise| {
-            accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
+            accum.noise += /* scale *  */noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
             scale *= 0.5;
             accum.total_amplitude += accum.amplitude;
             accum.amplitude *= self.persistence;
             accum.frequency *= self.lacunarity;
             accum
         });
-        // result.noise / result.total_amplitude
-        result.noise
+        result.noise / result.total_amplitude
+        // result.noise
     }
 }
 
 pub trait NoiseSampler {
-    fn sample_noise(&self, point: Point) -> f64;
-}
-
-pub struct SimplexInterval<'a> {
-    simplex: &'a OpenSimplex,
-    interval: &'a NoiseGenInterval,
+    fn sample_noise(self, point: Point) -> f64;
 }
 
 impl NoiseSampler for &Simplex {
-    fn sample_noise(&self, point: Point) -> f64 {
+    fn sample_noise(self, point: Point) -> f64 {
         self.sample(point)
     }
 }
 
 impl<'a> NoiseSampler for SimplexInterval<'a> {
-    fn sample_noise(&self, point: Point) -> f64 {
+    fn sample_noise(self, point: Point) -> f64 {
         self.interval.sample(&self.simplex, point)
+    }
+}
+
+impl<F: FnMut(Point) -> f64> NoiseSampler for F {
+    fn sample_noise(mut self, point: Point) -> f64 {
+        let mut f = self;
+        f(point)
+    }
+}
+
+impl NoiseSampler for &OpenSimplex {
+    fn sample_noise(self, point: Point) -> f64 {
+        self.get([point.x, point.y])
     }
 }
 
@@ -1059,5 +958,81 @@ pub trait ResponseExt {
 impl ResponseExt for Response {
     fn join(&mut self, other: Response) {
         *self = self.union(other);
+    }
+}
+
+impl Default for OctaveGen {
+    fn default() -> Self {
+        Self {
+            persistence: 0.5,
+            lacunarity: 1.0,
+            initial_amplitude: 1.0,
+            scale: 1.0,
+        }
+    }
+}
+
+impl Default for NoiseGenGui {
+    fn default() -> Self {
+        Self {
+            simplexes: vec![SimplexGui::default()],
+            octave_gen: OctaveGen::default(),
+        }
+    }
+}
+
+impl Default for NoiseGenIntervalGui {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            spline: SplineGui::default(),
+            octaves: 4,
+            persistence: 0.5,
+            lacunarity: 2.0,
+            scale: 0.5,
+            initial_amplitude: 1.0,
+            x_mult: 0.1,
+            y_mult: 0.1,
+            low: NoiseBound::clamp(0.),
+            high: NoiseBound::clamp(1.0),
+        }
+    }
+}
+
+impl Default for SplineGui {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spline: vec![
+                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
+                InterpKey::new(0.0, 0.0, Interpolation::CatmullRom),
+                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
+                InterpKey::new(1.0, 1.0, Interpolation::CatmullRom),
+            ],
+            id: SplineId(next_id()),
+        }
+    }
+}
+
+impl Default for SplineId {
+    fn default() -> Self {
+        Self(next_id())
+    }
+}
+
+impl Default for DefId {
+    fn default() -> Self {
+        Self(next_key_id())
+    }
+}
+
+impl Default for SimplexGui {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            seed: String::from(""),
+            intervals: vec![NoiseGenIntervalGui::default()],
+            octave_gen: OctaveGen::default(),
+        }
     }
 }
