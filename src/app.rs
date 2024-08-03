@@ -55,6 +55,7 @@ fn generate_grayscale_noise(noise_gui: &NoiseGenGui) -> image::RgbImage {
 pub struct NoiseEditorApp {
     noisegen_gui: NoiseGenGui,
     auto_generate: bool,
+    show_grid: bool,
     #[serde(skip)]
     texture: Option<TextureHandle>,
 }
@@ -64,6 +65,7 @@ impl Default for NoiseEditorApp {
         Self {
             auto_generate: false,
             noisegen_gui: NoiseGenGui::default(),
+            show_grid: true,
             texture: None,
         }
     }
@@ -117,21 +119,25 @@ impl eframe::App for NoiseEditorApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                 ui.group(|ui| {
-                    egui::Frame::canvas(ui.style()).fill(Color32::BLACK).show(ui, |ui| {
-                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(512.), Sense::hover());
-                        ui.allocate_ui_at_rect(rect, |ui| {
-                            let painter = ui.painter();
-                            if let Some(tex) = &self.texture {
-                                painter.image(tex.id(), rect, Rect::from_min_max(Pos2::new(0., 0.), Pos2::new(1., 1.)), Color32::WHITE);
-                            }
-                            for i in 0..16 {
-                                let n = i as f32 * (512. / 16.);
-                                painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
-                                painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
-                            }
+                    ui.vertical(|ui| {
+                        egui::Frame::canvas(ui.style()).fill(Color32::BLACK).show(ui, |ui| {
+                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(512.), Sense::hover());
+                            ui.allocate_ui_at_rect(rect, |ui| {
+                                let painter = ui.painter();
+                                if let Some(tex) = &self.texture {
+                                    painter.image(tex.id(), rect, Rect::from_min_max(Pos2::new(0., 0.), Pos2::new(1., 1.)), Color32::WHITE);
+                                }
+                                if self.show_grid {
+                                    for i in 0..16 {
+                                        let n = i as f32 * (512. / 16.);
+                                        painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
+                                        painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
+                                    }
+                                }
+                            });
                         });
+                        ui.checkbox(&mut self.show_grid, "Show Grid");
                     });
-                    
                 });
                 ui.vertical(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
