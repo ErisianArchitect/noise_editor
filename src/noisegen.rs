@@ -8,7 +8,7 @@ use rand::{RngCore, SeedableRng};
 use serde::{de::Visitor, ser::{SerializeSeq, SerializeStruct}};
 use sha2::{Sha256, digest::Update, Digest};
 use egui::*;
-use splines::{spline::KeyMut, Key, Spline};
+use splines::Key;
 
 // let mut hasher = Sha256::default();
 // Digest::update(&mut hasher, b"Hello, world");
@@ -90,67 +90,63 @@ pub struct OctaveGen {
     pub lacunarity: f64,
     pub initial_amplitude: f64,
     pub scale: f64,
+    pub x_mult: f64,
+    pub y_mult: f64,
+    pub rotation: f64,
+    pub offset: (f64, f64),
 }
 
 #[derive(Debug, Clone)]
-pub struct NoiseGen {
-    simplexes: Vec<Simplex>,
+pub struct NoiseGenSampler {
+    simplexes: Vec<SimplexSampler>,
     octave_gen: OctaveGen,
 }
 
 #[derive(Debug, Clone)]
-pub struct Simplex {
+pub struct SimplexSampler {
     enabled: bool,
     simplex: OpenSimplex,
-    intervals: Vec<NoiseGenInterval>,
+    intervals: Vec<NoiseGenIntervalSampler>,
     octave_gen: OctaveGen,
 }
 
 #[derive(Debug, Clone)]
-pub struct NoiseGenInterval {
+pub struct NoiseGenIntervalSampler {
     enabled: bool,
-    spline: Option<Spline<f64, f64>>,
+    spline: Option<splines::Spline<f64, f64>>,
     octaves: u32,
-    persistence: f64,
-    lacunarity: f64,
-    scale: f64,
-    initial_amplitude: f64,
-    x_mult: f64,
-    y_mult: f64,
+    octave_gen: OctaveGen,
+    invert: bool,
     bounds: NoiseBounds,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct NoiseGenGui {
-    simplexes: Vec<SimplexGui>,
+pub struct NoiseGenConfig {
+    simplexes: Vec<SimplexConfig>,
     octave_gen: OctaveGen,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SimplexGui {
+pub struct SimplexConfig {
     enabled: bool,
     seed: String,
-    intervals: Vec<NoiseGenIntervalGui>,
+    intervals: Vec<NoiseGenIntervalConfig>,
     octave_gen: OctaveGen,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct NoiseGenIntervalGui {
+pub struct NoiseGenIntervalConfig {
     enabled: bool,
-    spline: SplineGui,
+    spline: SplineConfig,
     octaves: u32,
-    persistence: f64,
-    lacunarity: f64,
-    scale: f64,
-    initial_amplitude: f64,
-    x_mult: f64,
-    y_mult: f64,
+    octave_gen: OctaveGen,
+    invert: bool,
     bounds: NoiseBounds,
     id: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SplineGui {
+pub struct SplineConfig {
     enabled: bool,
     spline: Vec<InterpKey>,
     #[serde(skip, default)]
@@ -206,7 +202,7 @@ pub struct Point {
 
 pub struct SimplexInterval<'a> {
     simplex: &'a OpenSimplex,
-    interval: &'a NoiseGenInterval,
+    interval: &'a NoiseGenIntervalSampler,
 }
 
 impl NoiseBound {
@@ -376,21 +372,28 @@ impl NoiseBounds {
     }
 }
 
-impl NoiseGenInterval {
+impl NoiseGenIntervalSampler {
     pub fn sample(&self, simplex: &OpenSimplex, point: Point) -> f64 {
-        let point = Point::new(point.x * self.x_mult * 0.01, point.y * self.y_mult * 0.01);
-        let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale, self.initial_amplitude);
+        let point = Point::new(point.x / 256.0, point.y / 256.0);
+        // let point = Point::new(point.x * self.x_mult * 0.01, point.y * self.y_mult * 0.01);
+        let noise = self.octave_gen.sample(point, (0..self.octaves).map(|_| simplex));
+        // let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale, self.initial_amplitude);
         let gradient = (noise + 1.) * 0.5;
         let gradient = if let Some(spline) = &self.spline {
             spline.sample(gradient).unwrap_or(gradient)
         } else {
             gradient
         };
-        self.bounds.bound(gradient)
+        let gradient = self.bounds.bound(gradient);
+        if self.invert {
+            -gradient + 1.0
+        } else {
+            gradient
+        }
     }
 }
 
-impl Simplex {
+impl SimplexSampler {
     pub fn enabled(&self) -> bool {
         self.enabled && !self.intervals.is_empty() && self.intervals.iter().any(|interval| interval.enabled)
     }
@@ -407,7 +410,7 @@ impl Simplex {
     }
 }
 
-impl NoiseGen {
+impl NoiseGenSampler {
     pub fn sample(&self, point: Point) -> f64 {
         if self.simplexes.is_empty() {
             return 0.0;
@@ -427,7 +430,7 @@ impl NoiseGen {
 
 const LABEL_WIDTH: f32 = 100.;
 
-impl Widget for &mut SplineGui {
+impl Widget for &mut SplineConfig {
     fn ui(self, ui: &mut Ui) -> Response {
         // let mut resp = self.enabled.ui_checkbox(ui, "Spline Enabled");
         // Let me see what it looks like at a certain size first.
@@ -598,7 +601,7 @@ impl Widget for &mut SplineGui {
     }
 }
 
-impl Widget for &mut NoiseGenIntervalGui {
+impl Widget for &mut NoiseGenIntervalConfig {
     fn ui(self, ui: &mut Ui) -> Response {
         ui.vertical(|ui| {
             let mut resp = ui.checkbox(&mut self.enabled, "Interval Enabled");
@@ -613,41 +616,7 @@ impl Widget for &mut NoiseGenIntervalGui {
                     .range(1..=4);
                 resp = resp.union(ui.add(drag));
             });
-            ui.labeled(LABEL_WIDTH, "Persistence", |ui| {
-                let drag = egui::DragValue::new(&mut self.persistence)
-                    .speed(0.0025)
-                    .range(0.0..=4.0);
-                resp = resp.union(ui.add(drag));
-            });
-            ui.labeled(LABEL_WIDTH, "Lacunarity", |ui| {
-                let drag = egui::DragValue::new(&mut self.lacunarity)
-                    .speed(0.0025);
-                resp = resp.union(ui.add(drag));
-            });
-            ui.labeled(LABEL_WIDTH, "Scale", |ui| {
-                let drag = egui::DragValue::new(&mut self.scale)
-                    .speed(0.0025)
-                    .range(0.0..=16.0);
-                resp = resp.union(ui.add(drag));
-            });
-            ui.labeled(LABEL_WIDTH, "Initial Amplitude", |ui| {
-                let drag = DragValue::new(&mut self.initial_amplitude)
-                    .speed(0.01)
-                    .range(0.01..=30.0);
-                resp = resp.union(ui.add(drag));
-            });
-            ui.labeled(LABEL_WIDTH, "X Multiplier", |ui| {
-                let drag = egui::DragValue::new(&mut self.x_mult)
-                    .speed(0.01)
-                    .range(0.0..=100.0);
-                resp = resp.union(ui.add(drag));
-            });
-            ui.labeled(LABEL_WIDTH, "Y Multiplier", |ui| {
-                let drag = egui::DragValue::new(&mut self.y_mult)
-                    .speed(0.01)
-                    .range(0.0..=100.0);
-                resp = resp.union(ui.add(drag));
-            });
+            resp.join(ui.add(&mut self.octave_gen));
             ui.labeled(LABEL_WIDTH, "Low Bound", |ui| {
                 let drag = egui::DragValue::new(&mut self.bounds.low.t)
                     .speed(0.0025)
@@ -672,13 +641,14 @@ impl Widget for &mut NoiseGenIntervalGui {
                     resp.mark_changed();
                 }
             });
+            resp.join(ui.toggle_value(&mut self.invert, "Invert"));
             resp
         }).inner
 
     }
 }
 
-impl SimplexGui {
+impl SimplexConfig {
     pub fn ui(&mut self, index: usize, ui: &mut Ui) -> Response {
         let mut resp = ui.checkbox(&mut self.enabled, "Simplex Enabled");
         if !self.enabled {
@@ -689,7 +659,7 @@ impl SimplexGui {
         });
         resp = resp.union(ui.add(&mut self.octave_gen));
         if ui.button("Add Interval").clicked() {
-            self.intervals.push(NoiseGenIntervalGui::default());
+            self.intervals.push(NoiseGenIntervalConfig::default());
             resp.mark_changed();
         }
         ui.group(|ui| {
@@ -711,11 +681,11 @@ impl SimplexGui {
     }
 }
 
-impl Widget for &mut NoiseGenGui {
+impl Widget for &mut NoiseGenConfig {
     fn ui(self, ui: &mut Ui) -> Response {
         let mut resp = ui.add(&mut self.octave_gen);
         if ui.button("Add Simplex").clicked() {
-            self.simplexes.push(SimplexGui::default());
+            self.simplexes.push(SimplexConfig::default());
             resp.mark_changed();
         }
         ui.group(|ui| {
@@ -768,6 +738,33 @@ impl Widget for &mut OctaveGen {
                 .speed(0.0025);
             ui.add(drag)
         }));
+        ui.labeled(LABEL_WIDTH, "X Multiplier", |ui| {
+            let drag = egui::DragValue::new(&mut self.x_mult)
+                .speed(0.01)
+                .range(0.0..=100.0);
+            resp = resp.union(ui.add(drag));
+        });
+        ui.labeled(LABEL_WIDTH, "Y Multiplier", |ui| {
+            let drag = egui::DragValue::new(&mut self.y_mult)
+                .speed(0.01)
+                .range(0.0..=100.0);
+            resp = resp.union(ui.add(drag));
+        });
+        resp.join(ui.labeled(LABEL_WIDTH, "Rotation", |ui| {
+            let drag = egui::DragValue::new(&mut self.rotation)
+                .speed(0.01);
+            ui.add(drag)
+        }));
+        ui.labeled(LABEL_WIDTH, "Offset", |ui| {
+            ui.label("X");
+            let drag = egui::DragValue::new(&mut self.offset.0)
+                .speed(0.01);
+            resp.join(ui.add(drag));
+            ui.label("Y");
+            let drag = egui::DragValue::new(&mut self.offset.1)
+                .speed(0.01);
+            resp.join(ui.add(drag));
+        });
         resp
     }
 }
@@ -790,6 +787,13 @@ impl OctaveGen {
             self.scale
         );
         let mut scale = 1.0;
+        let angle = self.rotation.to_radians();
+        let point = Point::new(point.x + self.offset.0, point.y + self.offset.1);
+        let point = Point::new(
+            point.x * angle.cos() - point.y * angle.sin(),
+            point.x * angle.sin() + point.y * angle.cos()
+        );
+        let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
         let result = layers.into_iter().fold(init, |mut accum, noise| {
             accum.noise += /* scale *  */noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
             scale *= 0.5;
@@ -803,7 +807,7 @@ impl OctaveGen {
     }
 }
 
-impl NoiseSampler for &Simplex {
+impl NoiseSampler for &SimplexSampler {
     fn sample_noise(self, point: Point) -> f64 {
         self.sample(point)
     }
@@ -841,38 +845,38 @@ impl Default for OctaveGen {
             lacunarity: 1.0,
             initial_amplitude: 1.0,
             scale: 1.0,
+            x_mult: 1.0,
+            y_mult: 1.0,
+            rotation: 0.0,
+            offset: (0., 0.),
         }
     }
 }
 
-impl Default for NoiseGenGui {
+impl Default for NoiseGenConfig {
     fn default() -> Self {
         Self {
-            simplexes: vec![SimplexGui::default()],
+            simplexes: vec![SimplexConfig::default()],
             octave_gen: OctaveGen::default(),
         }
     }
 }
 
-impl Default for NoiseGenIntervalGui {
+impl Default for NoiseGenIntervalConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            spline: SplineGui::default(),
+            spline: SplineConfig::default(),
             octaves: 4,
-            persistence: 0.5,
-            lacunarity: 2.0,
-            scale: 0.5,
-            initial_amplitude: 1.0,
-            x_mult: 32.,
-            y_mult: 32.,
+            octave_gen: OctaveGen::default(),
+            invert: false,
             bounds: NoiseBounds::new(NoiseBound::clamp(0.), NoiseBound::clamp(1.)),
             id: next_counter(),
         }
     }
 }
 
-impl Default for SplineGui {
+impl Default for SplineConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -899,19 +903,19 @@ impl Default for DefId {
     }
 }
 
-impl Default for SimplexGui {
+impl Default for SimplexConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             seed: String::from(""),
-            intervals: vec![NoiseGenIntervalGui::default()],
+            intervals: vec![NoiseGenIntervalConfig::default()],
             octave_gen: OctaveGen::default(),
         }
     }
 }
 
-impl From<NoiseGenGui> for NoiseGen {
-    fn from(value: NoiseGenGui) -> Self {
+impl From<NoiseGenConfig> for NoiseGenSampler {
+    fn from(value: NoiseGenConfig) -> Self {
         Self {
             octave_gen: value.octave_gen,
             simplexes: value.simplexes.into_iter().filter(|simplex| simplex.enabled).map(|simplex| simplex.into()).collect()
@@ -919,37 +923,33 @@ impl From<NoiseGenGui> for NoiseGen {
     }
 }
 
-impl From<SimplexGui> for Simplex {
-    fn from(value: SimplexGui) -> Self {
+impl From<SimplexConfig> for SimplexSampler {
+    fn from(value: SimplexConfig) -> Self {
         let seed = make_seed(value.seed);
         let simplex = OpenSimplex::new(seed);
         Self {
             enabled: value.enabled,
             simplex,
-            intervals: value.intervals.into_iter().filter(|interval| interval.enabled).map(NoiseGenInterval::from).collect(),
+            intervals: value.intervals.into_iter().filter(|interval| interval.enabled).map(NoiseGenIntervalSampler::from).collect(),
             octave_gen: value.octave_gen,
         }
     }
 }
 
-impl From<NoiseGenIntervalGui> for NoiseGenInterval {
-    fn from(value: NoiseGenIntervalGui) -> Self {
+impl From<NoiseGenIntervalConfig> for NoiseGenIntervalSampler {
+    fn from(value: NoiseGenIntervalConfig) -> Self {
         Self {
             enabled: value.enabled,
             spline: if value.spline.enabled {
-                Some(Spline::from_iter(value.spline.spline.into_iter().map(|interp| {
+                Some(splines::Spline::from_iter(value.spline.spline.into_iter().map(|interp| {
                     Key::new(interp.x, interp.y, interp.interpolation.into())
                 })))
             } else {
                 None
             },
             octaves: value.octaves,
-            persistence: value.persistence,
-            lacunarity: value.lacunarity,
-            scale: value.scale,
-            initial_amplitude: value.initial_amplitude,
-            x_mult: value.x_mult,
-            y_mult: value.y_mult,
+            octave_gen: value.octave_gen,
+            invert: value.invert,
             bounds: value.bounds,
         }
     }

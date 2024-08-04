@@ -12,7 +12,7 @@ fn next_index() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
-use crate::noisegen::{NoiseGen, NoiseGenGui, Point};
+use crate::noisegen::{NoiseGenSampler, NoiseGenConfig, Point};
 
 fn load_image<P: AsRef<Path>>(path: P) -> Result<egui::ColorImage, image::ImageError> {
     let image = image::open(path)?;
@@ -34,9 +34,9 @@ fn convert_image_rgba(image: image::RgbaImage) -> egui::ColorImage {
     egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
 }
 
-fn generate_grayscale_noise(noise_gui: &NoiseGenGui) -> image::RgbImage {
+fn generate_grayscale_noise(noise_gui: &NoiseGenConfig) -> image::RgbImage {
     let mut img = image::RgbImage::new(256, 256);
-    let noise_gen: NoiseGen = noise_gui.clone().into();
+    let noise_gen: NoiseGenSampler = noise_gui.clone().into();
     for y in 0..256 {
         for x in 0..256 {
             let fx = x as f64 + 0.5;
@@ -53,7 +53,7 @@ fn generate_grayscale_noise(noise_gui: &NoiseGenGui) -> image::RgbImage {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct NoiseEditorApp {
-    noisegen_gui: NoiseGenGui,
+    noisegen_gui: NoiseGenConfig,
     auto_generate: bool,
     show_grid: bool,
     #[serde(skip)]
@@ -64,7 +64,7 @@ impl Default for NoiseEditorApp {
     fn default() -> Self {
         Self {
             auto_generate: false,
-            noisegen_gui: NoiseGenGui::default(),
+            noisegen_gui: NoiseGenConfig::default(),
             show_grid: true,
             texture: None,
         }
@@ -121,7 +121,7 @@ impl eframe::App for NoiseEditorApp {
                 ui.group(|ui| {
                     ui.vertical(|ui| {
                         egui::Frame::canvas(ui.style()).fill(Color32::BLACK).show(ui, |ui| {
-                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(512.), Sense::hover());
+                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(768.), Sense::hover());
                             ui.allocate_ui_at_rect(rect, |ui| {
                                 let painter = ui.painter();
                                 if let Some(tex) = &self.texture {
@@ -129,7 +129,7 @@ impl eframe::App for NoiseEditorApp {
                                 }
                                 if self.show_grid {
                                     for i in 0..16 {
-                                        let n = i as f32 * (512. / 16.);
+                                        let n = i as f32 * (768. / 16.);
                                         painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
                                         painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
                                     }
