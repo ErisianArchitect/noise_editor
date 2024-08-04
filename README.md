@@ -1,3 +1,3 @@
 A layered Simplex Noise editor. I made this for my game project, but you're free to use it for whatever you want. It's not taylored for general users, it was just quickly hacked together so I could play around with noise functions to get the hang of it. It came with the positive side-effect of being able to export these noise functions for importing in another program. I'll leave it as an exercise to whoever finds this to figure out how to do that. I left the building blocks to do so in the code, so it shouldn't be too daunting for the determined individual.
 
-![Screenshot of program in use](https://i.imgur.com/RKssUTo.png)
+![Screenshot of program in use](https://github.com/ErisianArchitect/noise_editor/blob/main/Screenshot%202024-08-04%20012052.png)
