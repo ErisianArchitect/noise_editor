@@ -106,6 +106,7 @@ pub struct OctaveGen {
 #[derive(Debug, Clone)]
 pub struct NoiseGenSampler {
     simplexes: Vec<SimplexSampler>,
+    weights: Vec<f64>,
     octave_gen: OctaveGen,
 }
 
@@ -114,6 +115,7 @@ pub struct SimplexSampler {
     enabled: bool,
     simplex: OpenSimplex,
     intervals: Vec<NoiseGenIntervalSampler>,
+    weights: Vec<f64>,
     octave_gen: OctaveGen,
 }
 
@@ -139,6 +141,7 @@ pub struct SimplexConfig {
     intervals: Vec<NoiseGenIntervalConfig>,
     octave_gen: OctaveGen,
     seed: String,
+    weight: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash)]
@@ -154,6 +157,7 @@ pub struct NoiseGenIntervalConfig {
     octave_gen: OctaveGen,
     invert: bool,
     bounds: NoiseBounds,
+    weight: f64,
     #[serde(skip, default)]
     id: IntervalId,
 }
@@ -425,7 +429,7 @@ impl SimplexSampler {
     }
 
     pub fn sample(&self, point: Point) -> f64 {
-        self.octave_gen.sample(point, self.intervals.iter().filter_map(|interval| interval.enabled.opt(SimplexInterval {
+        self.octave_gen.weighted_sample(point, &self.weights,self.intervals.iter().filter_map(|interval| interval.enabled.opt(SimplexInterval {
             interval,
             simplex: &self.simplex
         })))
@@ -441,7 +445,7 @@ impl NoiseGenSampler {
         if self.simplexes.is_empty() {
             return 0.0;
         }
-        self.octave_gen.sample(point, self.simplexes.iter().filter(|simplex| simplex.enabled))
+        self.octave_gen.weighted_sample(point, &self.weights, self.simplexes.iter().filter(|simplex| simplex.enabled))
     }
 }
 
@@ -627,6 +631,12 @@ impl Widget for &mut NoiseGenIntervalConfig {
             }
             // ui.label(RichText::from("TODO: Add Spline Editor").color(Color32::RED).strong());
             resp = resp.union(ui.add(&mut self.spline));
+            ui.labeled(LABEL_WIDTH, "Layer Weight", |ui| {
+                let drag = egui::DragValue::new(&mut self.weight)
+                    .speed(0.0025)
+                    .range(0.0..=f64::INFINITY);
+                resp.join(ui.add(drag));
+            });
             ui.labeled(LABEL_WIDTH, "Octaves", |ui| {
                 let drag = egui::DragValue::new(&mut self.octaves)
                     .speed(0.05)
@@ -637,7 +647,7 @@ impl Widget for &mut NoiseGenIntervalConfig {
             ui.labeled(LABEL_WIDTH, "Low Bound", |ui| {
                 let drag = egui::DragValue::new(&mut self.bounds.low.t)
                     .speed(0.0025)
-                    .range(0.0..=1.0);
+                    .range(0.0..=0.999);
                 resp = resp.union(ui.add(drag));
                 let mut cresp = ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Clamp, "Clamp");
                 cresp.join(ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Range, "Range"));
@@ -649,7 +659,7 @@ impl Widget for &mut NoiseGenIntervalConfig {
             ui.labeled(LABEL_WIDTH, "High Bound", |ui| {
                 let drag = egui::DragValue::new(&mut self.bounds.high.t)
                     .speed(0.0025)
-                    .range(0.0..=1.0);
+                    .range(0.01..=1.0);
                 resp = resp.union(ui.add(drag));
                 let mut cresp = ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Clamp, "Clamp");
                 cresp.join(ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Range, "Range"));
@@ -671,6 +681,12 @@ impl SimplexConfig {
         if !self.enabled {
             ui.disable();
         }
+        ui.labeled(LABEL_WIDTH, "Layer Weight", |ui| {
+            let drag = egui::DragValue::new(&mut self.weight)
+                .speed(0.0025)
+                .range(0.0..=f64::INFINITY);
+            resp.join(ui.add(drag));
+        });
         ui.labeled(LABEL_WIDTH, "Seed", |ui| {
             resp = resp.union(ui.text_edit_singleline(&mut self.seed));
         });
@@ -803,14 +819,77 @@ impl NoiseLayer {
 }
 
 impl OctaveGen {
+    pub fn weighted_sample<F: NoiseSampler, It: IntoIterator<Item = F>>(&self, point: Point, weights: &[f64], layers: It) -> f64 {
+        let mut scale = 1.0;
+        let angle = self.rotation.to_radians();
+        let point = Point::new(point.x + self.offset.0, point.y + self.offset.1);
+        let point = if self.rotation != 0.0 {
+            Point::new(
+                point.x * angle.cos() - point.y * angle.sin(),
+                point.x * angle.sin() + point.y * angle.cos()
+            )
+        } else {
+            point
+        };
+        let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
+        match self.blend_mode {
+            OctaveBlend::Scale => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    0.0,  
+                );
+                layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
+                    accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
+                    scale *= 0.5;
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                }).noise
+            },
+            OctaveBlend::Multiply => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    1.0,  
+                );
+                layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
+                    accum.noise *= noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                }).noise
+            },
+            OctaveBlend::Average => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    0.0,  
+                );
+                let result = layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
+                    accum.noise += noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
+                    accum.total_amplitude += accum.amplitude;
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                });
+                result.noise / result.total_amplitude
+            }
+        }
+    }
+
     pub fn sample<F: NoiseSampler, It: IntoIterator<Item = F>>(&self, point: Point, layers: It) -> f64 {
         let mut scale = 1.0;
         let angle = self.rotation.to_radians();
         let point = Point::new(point.x + self.offset.0, point.y + self.offset.1);
-        let point = Point::new(
-            point.x * angle.cos() - point.y * angle.sin(),
-            point.x * angle.sin() + point.y * angle.cos()
-        );
+        let point = if self.rotation != 0.0 {
+            Point::new(
+                point.x * angle.cos() - point.y * angle.sin(),
+                point.x * angle.sin() + point.y * angle.cos()
+            )
+        } else {
+            point
+        };
         let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
         match self.blend_mode {
             OctaveBlend::Scale => {
@@ -822,7 +901,6 @@ impl OctaveGen {
                 layers.into_iter().fold(init, |mut accum, noise| {
                     accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
                     scale *= 0.5;
-                    // accum.total_amplitude += accum.amplitude;
                     accum.amplitude *= self.persistence;
                     accum.frequency *= self.lacunarity;
                     accum
@@ -836,8 +914,6 @@ impl OctaveGen {
                 );
                 layers.into_iter().fold(init, |mut accum, noise| {
                     accum.noise *= noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
-                    // scale *= 0.5;
-                    // accum.total_amplitude += accum.amplitude;
                     accum.amplitude *= self.persistence;
                     accum.frequency *= self.lacunarity;
                     accum
@@ -935,6 +1011,7 @@ impl Default for NoiseGenIntervalConfig {
             octave_gen: OctaveGen::default(),
             invert: false,
             bounds: NoiseBounds::new(NoiseBound::clamp(0.), NoiseBound::clamp(1.)),
+            weight: 1.0,
             id: IntervalId::default(),
         }
     }
@@ -974,14 +1051,23 @@ impl Default for SimplexConfig {
             seed: String::from(""),
             intervals: vec![NoiseGenIntervalConfig::default()],
             octave_gen: OctaveGen::default(),
+            weight: 1.0,
         }
     }
 }
 
 impl From<NoiseGenConfig> for NoiseGenSampler {
     fn from(value: NoiseGenConfig) -> Self {
+        let mut total_weight = 0.0;
+        let mut weights = value.simplexes.iter().map(|simp| {
+            total_weight += simp.weight;
+            simp.weight
+        }).collect_vec();
+        let weight_mul = 1.0 / total_weight;
+        weights.iter_mut().for_each(|weight| *weight *= weight_mul);
         Self {
             octave_gen: value.octave_gen,
+            weights,
             simplexes: value.simplexes.into_iter().filter(|simplex| simplex.enabled).map(|simplex| simplex.into()).collect()
         }
     }
@@ -991,9 +1077,17 @@ impl From<SimplexConfig> for SimplexSampler {
     fn from(value: SimplexConfig) -> Self {
         let seed = make_seed(value.seed);
         let simplex = OpenSimplex::new(seed);
+        let mut total_weight = 0.0;
+        let mut weights = value.intervals.iter().map(|interval| {
+            total_weight += interval.weight;
+            interval.weight
+        }).collect_vec();
+        let weight_mul = 1.0 / total_weight;
+        weights.iter_mut().for_each(|weight| *weight *= weight_mul);
         Self {
             enabled: value.enabled,
             simplex,
+            weights,
             intervals: value.intervals.into_iter().filter(|interval| interval.enabled).map(NoiseGenIntervalSampler::from).collect(),
             octave_gen: value.octave_gen,
         }
