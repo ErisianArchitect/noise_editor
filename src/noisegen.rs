@@ -647,7 +647,7 @@ impl Widget for &mut NoiseGenIntervalConfig {
             ui.labeled(LABEL_WIDTH, "Low Bound", |ui| {
                 let drag = egui::DragValue::new(&mut self.bounds.low.t)
                     .speed(0.0025)
-                    .range(0.0..=0.999);
+                    .range(0.0..=self.bounds.high.t - 0.001);
                 resp = resp.union(ui.add(drag));
                 let mut cresp = ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Clamp, "Clamp");
                 cresp.join(ui.selectable_value(&mut self.bounds.low.mode, NoiseBoundMode::Range, "Range"));
@@ -659,7 +659,7 @@ impl Widget for &mut NoiseGenIntervalConfig {
             ui.labeled(LABEL_WIDTH, "High Bound", |ui| {
                 let drag = egui::DragValue::new(&mut self.bounds.high.t)
                     .speed(0.0025)
-                    .range(0.01..=1.0);
+                    .range(self.bounds.low.t + 0.001..=1.0);
                 resp = resp.union(ui.add(drag));
                 let mut cresp = ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Clamp, "Clamp");
                 cresp.join(ui.selectable_value(&mut self.bounds.high.mode, NoiseBoundMode::Range, "Range"));
