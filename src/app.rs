@@ -34,13 +34,13 @@ fn convert_image_rgba(image: image::RgbaImage) -> egui::ColorImage {
     egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice())
 }
 
-fn generate_grayscale_noise(noise_gui: &NoiseGenConfig) -> image::RgbImage {
-    let mut img = image::RgbImage::new(256, 256);
+fn generate_grayscale_noise(noise_gui: &NoiseGenConfig, size: (u32, u32)) -> image::RgbImage {
+    let mut img = image::RgbImage::new(size.0, size.1);
     let noise_gen: NoiseGenSampler = noise_gui.clone().into();
-    for y in 0..256 {
-        for x in 0..256 {
-            let fx = x as f64 + 0.5;
-            let fy = y as f64 + 0.5;
+    for y in 0..size.0 {
+        for x in 0..size.1 {
+            let fx = x as f64;
+            let fy = y as f64;
             let noise = noise_gen.sample(Point::new(fx, fy));
             let grey = (255.0 * noise) as u8;
             img.put_pixel(x, y, Rgb([grey, grey, grey]));
@@ -53,7 +53,7 @@ fn generate_grayscale_noise(noise_gui: &NoiseGenConfig) -> image::RgbImage {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct NoiseEditorApp {
-    noisegen_gui: NoiseGenConfig,
+    noisegen_config: NoiseGenConfig,
     auto_generate: bool,
     show_grid: bool,
     #[serde(skip)]
@@ -64,7 +64,7 @@ impl Default for NoiseEditorApp {
     fn default() -> Self {
         Self {
             auto_generate: false,
-            noisegen_gui: NoiseGenConfig::default(),
+            noisegen_config: NoiseGenConfig::default(),
             show_grid: true,
             texture: None,
         }
@@ -80,10 +80,22 @@ impl NoiseEditorApp {
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+            let mut editor: Self = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+            if editor.auto_generate {
+                editor.generate_noise(&cc.egui_ctx);
+            }
+            return editor;
         }
 
         Default::default()
+    }
+}
+
+impl NoiseEditorApp {
+    pub fn generate_noise(&mut self, ctx: &Context) {
+        let img = generate_grayscale_noise(&self.noisegen_config, (256, 256));
+        let colorimg = convert_image_rgb(img);
+        self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
     }
 }
 
@@ -105,6 +117,30 @@ impl eframe::App for NoiseEditorApp {
                 let is_web = cfg!(target_arch = "wasm32");
                 if !is_web {
                     ui.menu_button("File", |ui| {
+                        if ui.button("Import").clicked() {
+                            let file = rfd::FileDialog::new().add_filter("simp", &["simp"])
+                                .set_title("Import Noise Gen Config")
+                                .pick_file();
+                            if let Some(path) = file {
+                                if let Ok(config) = NoiseGenConfig::import(path) {
+                                    self.noisegen_config = config;
+                                } else {
+                                    println!("Failed to import config!");
+                                }
+                            }
+                        }
+                        if ui.button("Export").clicked() {
+                            let output = rfd::FileDialog::new().add_filter("simp", &["simp"])
+                                .set_title("Export Noise Gen Config")
+                                .save_file();
+                            if let Some(path) = output {
+                                if let Ok(_) = self.noisegen_config.export(path) {
+                                    println!("Noise Gen Exported.");
+                                } else {
+                                    println!("Failed to export.");
+                                }
+                            }
+                        }
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -143,7 +179,7 @@ impl eframe::App for NoiseEditorApp {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
                     let button = egui::Button::new("Save").rounding(Rounding::ZERO);
                     if ui.put(rect, button).clicked() {
-                        let img = generate_grayscale_noise(&self.noisegen_gui);
+                        let img = generate_grayscale_noise(&self.noisegen_config, (256, 256));
                         let save_file = rfd::FileDialog::new()
                             .add_filter("png", &["png"])
                             .set_file_name("output")
@@ -152,22 +188,22 @@ impl eframe::App for NoiseEditorApp {
                         if let Some(path) = save_file {
                             img.save(path);
                         }
-    
                     }
-    
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
                     let button = egui::Button::new("Generate Noise").rounding(Rounding::ZERO);
                     if ui.put(rect, button).clicked() {
-                        let img = generate_grayscale_noise(&self.noisegen_gui);
-                        let colorimg = convert_image_rgb(img);
-                        self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                        // let img = generate_grayscale_noise(&self.noisegen_config);
+                        // let colorimg = convert_image_rgb(img);
+                        // self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                        self.generate_noise(ctx);
                     }
                     ui.checkbox(&mut self.auto_generate, "Auto Generate");
-                    let resp = self.noisegen_gui.ui(ui);
+                    let resp = self.noisegen_config.ui(ui);
                     if self.auto_generate && resp.changed() {
-                        let img = generate_grayscale_noise(&self.noisegen_gui);
-                        let colorimg = convert_image_rgb(img);
-                        self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                        // let img = generate_grayscale_noise(&self.noisegen_config);
+                        // let colorimg = convert_image_rgb(img);
+                        // self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
+                        self.generate_noise(ctx);
                     }
                 });
             });

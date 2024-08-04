@@ -1,6 +1,6 @@
 #![allow(unused)]
 use core::f32;
-use std::{default, sync::atomic::AtomicU64};
+use std::{default, path::Path, sync::atomic::AtomicU64};
 
 use itertools::Itertools;
 use noise::{NoiseFn, OpenSimplex};
@@ -76,7 +76,6 @@ fn octave_noise(noise_fn: &OpenSimplex, point: Point, octaves: u32, persistence:
 }
 
 
-
 struct NoiseLayer {
     noise: f64,
     amplitude: f64,
@@ -84,7 +83,14 @@ struct NoiseLayer {
     total_amplitude: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum OctaveBlend {
+    Scale = 0,
+    Multiply = 1,
+    Average = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OctaveGen {
     pub persistence: f64,
     pub lacunarity: f64,
@@ -93,6 +99,7 @@ pub struct OctaveGen {
     pub x_mult: f64,
     pub y_mult: f64,
     pub rotation: f64,
+    pub blend_mode: OctaveBlend,
     pub offset: (f64, f64),
 }
 
@@ -129,9 +136,14 @@ pub struct NoiseGenConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimplexConfig {
     enabled: bool,
-    seed: String,
     intervals: Vec<NoiseGenIntervalConfig>,
     octave_gen: OctaveGen,
+    seed: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+struct IntervalId {
+    id: u64
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -142,7 +154,8 @@ pub struct NoiseGenIntervalConfig {
     octave_gen: OctaveGen,
     invert: bool,
     bounds: NoiseBounds,
-    id: u64,
+    #[serde(skip, default)]
+    id: IntervalId,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -189,9 +202,9 @@ pub struct NoiseBounds {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum Interpolation {
-    CatmullRom,
-    Cosine,
-    Linear,
+    CatmullRom = 0,
+    Cosine = 1,
+    Linear = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -203,6 +216,19 @@ pub struct Point {
 pub struct SimplexInterval<'a> {
     simplex: &'a OpenSimplex,
     interval: &'a NoiseGenIntervalSampler,
+}
+
+impl NoiseGenConfig {
+    pub fn export<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<bincode::ErrorKind>> {
+        let data = bincode::serialize(self)?;
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+
+    pub fn import<P: AsRef<Path>>(path: P) -> Result<Self, Box<bincode::ErrorKind>> {
+        let data = std::fs::read(path)?;
+        bincode::deserialize(&data)
+    }
 }
 
 impl NoiseBound {
@@ -374,7 +400,7 @@ impl NoiseBounds {
 
 impl NoiseGenIntervalSampler {
     pub fn sample(&self, simplex: &OpenSimplex, point: Point) -> f64 {
-        let point = Point::new(point.x / 256.0, point.y / 256.0);
+        let point = Point::new(point.x * 0.125, point.y * 0.125);
         // let point = Point::new(point.x * self.x_mult * 0.01, point.y * self.y_mult * 0.01);
         let noise = self.octave_gen.sample(point, (0..self.octaves).map(|_| simplex));
         // let noise = octave_noise(simplex, point, self.octaves, self.persistence, self.lacunarity, self.scale, self.initial_amplitude);
@@ -416,15 +442,6 @@ impl NoiseGenSampler {
             return 0.0;
         }
         self.octave_gen.sample(point, self.simplexes.iter().filter(|simplex| simplex.enabled))
-        // let (noise_accum, div) = self.simplexes.iter().fold((0., 0.), |(accum, div), simplex| {
-        //     let sample = simplex.sample(point);
-        //     if sample == f64::NEG_INFINITY {
-        //         (accum, div)
-        //     } else {
-        //         (accum + simplex.sample(point), div + 1.)
-        //     }
-        // });
-        // noise_accum / div
     }
 }
 
@@ -612,7 +629,7 @@ impl Widget for &mut NoiseGenIntervalConfig {
             resp = resp.union(ui.add(&mut self.spline));
             ui.labeled(LABEL_WIDTH, "Octaves", |ui| {
                 let drag = egui::DragValue::new(&mut self.octaves)
-                    .speed(0.1)
+                    .speed(0.05)
                     .range(1..=4);
                 resp = resp.union(ui.add(drag));
             });
@@ -765,16 +782,21 @@ impl Widget for &mut OctaveGen {
                 .speed(0.01);
             resp.join(ui.add(drag));
         });
+        ui.labeled(LABEL_WIDTH, "Blend Mode", |ui| {
+            resp.join(ui.selectable_value(&mut self.blend_mode, OctaveBlend::Scale, "Scale"));
+            resp.join(ui.selectable_value(&mut self.blend_mode, OctaveBlend::Average, "Average"));
+            resp.join(ui.selectable_value(&mut self.blend_mode, OctaveBlend::Multiply, "Multiply"));
+        });
         resp
     }
 }
 
 impl NoiseLayer {
-    pub const fn new(amplitude: f64, frequency: f64) -> Self {
+    pub const fn new(amplitude: f64, frequency: f64, noise: f64) -> Self {
         Self {
             amplitude,
             frequency,
-            noise: 0.0,
+            noise,
             total_amplitude: 0.0,
         }
     }
@@ -782,10 +804,6 @@ impl NoiseLayer {
 
 impl OctaveGen {
     pub fn sample<F: NoiseSampler, It: IntoIterator<Item = F>>(&self, point: Point, layers: It) -> f64 {
-        let init = NoiseLayer::new(
-            self.initial_amplitude,
-            self.scale
-        );
         let mut scale = 1.0;
         let angle = self.rotation.to_radians();
         let point = Point::new(point.x + self.offset.0, point.y + self.offset.1);
@@ -794,16 +812,53 @@ impl OctaveGen {
             point.x * angle.sin() + point.y * angle.cos()
         );
         let point = Point::new(point.x * self.x_mult, point.y * self.y_mult);
-        let result = layers.into_iter().fold(init, |mut accum, noise| {
-            accum.noise += /* scale *  */noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
-            scale *= 0.5;
-            accum.total_amplitude += accum.amplitude;
-            accum.amplitude *= self.persistence;
-            accum.frequency *= self.lacunarity;
-            accum
-        });
-        result.noise / result.total_amplitude
-        // result.noise
+        match self.blend_mode {
+            OctaveBlend::Scale => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    0.0,  
+                );
+                layers.into_iter().fold(init, |mut accum, noise| {
+                    accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
+                    scale *= 0.5;
+                    // accum.total_amplitude += accum.amplitude;
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                }).noise
+            },
+            OctaveBlend::Multiply => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    1.0,  
+                );
+                layers.into_iter().fold(init, |mut accum, noise| {
+                    accum.noise *= noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
+                    // scale *= 0.5;
+                    // accum.total_amplitude += accum.amplitude;
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                }).noise
+            },
+            OctaveBlend::Average => {
+                let init = NoiseLayer::new(
+                    self.initial_amplitude,
+                    self.scale,
+                    0.0,  
+                );
+                let result = layers.into_iter().fold(init, |mut accum, noise| {
+                    accum.noise += noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
+                    accum.total_amplitude += accum.amplitude;
+                    accum.amplitude *= self.persistence;
+                    accum.frequency *= self.lacunarity;
+                    accum
+                });
+                result.noise / result.total_amplitude
+            }
+        }
     }
 }
 
@@ -838,6 +893,14 @@ impl ResponseExt for Response {
     }
 }
 
+impl Default for IntervalId {
+    fn default() -> Self {
+        Self {
+            id: next_counter()
+        }
+    }
+}
+
 impl Default for OctaveGen {
     fn default() -> Self {
         Self {
@@ -848,6 +911,7 @@ impl Default for OctaveGen {
             x_mult: 1.0,
             y_mult: 1.0,
             rotation: 0.0,
+            blend_mode: OctaveBlend::Scale,
             offset: (0., 0.),
         }
     }
@@ -871,7 +935,7 @@ impl Default for NoiseGenIntervalConfig {
             octave_gen: OctaveGen::default(),
             invert: false,
             bounds: NoiseBounds::new(NoiseBound::clamp(0.), NoiseBound::clamp(1.)),
-            id: next_counter(),
+            id: IntervalId::default(),
         }
     }
 }
@@ -986,10 +1050,6 @@ trait BoolUiExt: Sized + Copy {
     fn select<T>(self, _true: T, _false: T) -> T;
 }
 
-trait UiExt {
-    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R;
-}
-
 impl BoolUiExt for bool {
     fn toggle(&mut self) -> bool {
         let old = *self;
@@ -1028,6 +1088,10 @@ impl BoolUiExt for bool {
     fn ui_toggle(&mut self, ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
         ui.toggle_value(self, text)
     }
+}
+
+trait UiExt {
+    fn labeled<R, Text: Into<widget_text::WidgetText>, F: FnMut(&mut Ui) -> R>(&mut self, label_width: f32, text: Text, add_contents: F) -> R;
 }
 
 impl UiExt for Ui {
