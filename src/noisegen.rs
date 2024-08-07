@@ -874,7 +874,7 @@ impl OctaveGen {
                 layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise += scale * noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude * weights[i];
                     } else {
                         accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
@@ -894,7 +894,7 @@ impl OctaveGen {
                 layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise *= noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude * weights[i];
                     } else {
                         accum.noise *= noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
@@ -913,7 +913,7 @@ impl OctaveGen {
                 let result = layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise += noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude * weights[i];
                     } else {
                         accum.noise += noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
@@ -934,7 +934,7 @@ impl OctaveGen {
                 let result = layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise = accum.noise.min(noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude * weights[i]);
                     } else {
                         accum.noise = accum.noise.min(noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i]);
@@ -955,7 +955,7 @@ impl OctaveGen {
                 let result = layers.into_iter().enumerate().fold(init, |mut accum, (i, noise)| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise = accum.noise.max(noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude * weights[i]);
                     } else {
                         accum.noise = accum.noise.max(noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i]);
@@ -969,7 +969,7 @@ impl OctaveGen {
             }
         }
     }
-
+    
     pub fn sample<F: NoiseSampler + Copy, It: IntoIterator<Item = F>>(&self, point: Point, layers: It) -> f64 {
         let angle = self.rotation.to_radians();
         let point = Point::new(point.x + self.offset.0, point.y + self.offset.1);
@@ -993,7 +993,7 @@ impl OctaveGen {
                 layers.into_iter().fold(init, |mut accum, noise| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise += scale * noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude;
                     } else {
                         accum.noise += scale * noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
@@ -1013,7 +1013,7 @@ impl OctaveGen {
                 layers.into_iter().fold(init, |mut accum, noise| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise *= noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude;
                     } else {
                         accum.noise *= noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
@@ -1032,7 +1032,7 @@ impl OctaveGen {
                 let result = layers.into_iter().fold(init, |mut accum, noise| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise += noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude;
                     } else {
                         accum.noise += noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude;
@@ -1053,7 +1053,7 @@ impl OctaveGen {
                 let result = layers.into_iter().fold(init, |mut accum, noise| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise = accum.noise.min(noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude);
                     } else {
                         accum.noise = accum.noise.min(noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude);
@@ -1073,7 +1073,7 @@ impl OctaveGen {
                 let result = layers.into_iter().fold(init, |mut accum, noise| {
                     if let Some((x_distort, y_distort)) = self.distortion {
                         let x_distortion = x_distort * domain_warp(noise, (point.x + 2.3 * self.x_mult) * accum.frequency, (point.y + 2.9 * self.y_mult) * accum.frequency);
-                        let y_distortion = x_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
+                        let y_distortion = y_distort * domain_warp(noise, (point.x - 3.1 * self.x_mult) * accum.frequency, (point.y - 4.3 * self.y_mult) * accum.frequency);
                         accum.noise = accum.noise.max(noise.sample_noise(Point::new((point.x + x_distortion) * accum.frequency, (point.y + y_distortion) * accum.frequency)) * accum.amplitude);
                     } else {
                         accum.noise = accum.noise.max(noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude);
