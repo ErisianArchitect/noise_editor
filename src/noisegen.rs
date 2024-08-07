@@ -104,6 +104,8 @@ pub struct OctaveGen {
     pub blend_mode: OctaveBlend,
     pub offset: (f64, f64),
     pub distortion: Option<(f64, f64)>,
+    #[serde(skip, default)]
+    pub distortion_storage: (f64, f64),
 }
 
 #[derive(Debug, Clone)]
@@ -814,7 +816,7 @@ impl Widget for &mut OctaveGen {
             let mut enabled = self.distortion.is_some();
             let mut inresp = ui.checkbox(&mut enabled, "");
             if enabled {
-                let distortion = self.distortion.get_or_insert_with(|| (0., 0.));
+                let distortion = self.distortion.get_or_insert_with(|| self.distortion_storage);
                 ui.label("X");
                 let xdrag = DragValue::new(&mut distortion.0)
                     .speed(0.0025)
@@ -826,7 +828,9 @@ impl Widget for &mut OctaveGen {
                     .range(0.0..=f64::INFINITY);
                 inresp.join(ui.add(ydrag));
             } else if inresp.changed() {
-                self.distortion.take();
+                if let Some(distortion) = self.distortion.take() {
+                    self.distortion_storage = distortion;
+                }
             }
             resp.join(inresp);
         });
@@ -939,7 +943,7 @@ impl OctaveGen {
                     } else {
                         accum.noise += noise.sample_noise(Point::new(point.x * accum.frequency, point.y * accum.frequency)) * accum.amplitude * weights[i];
                     }
-                    accum.total_amplitude += accum.amplitude;
+                    accum.total_amplitude += accum.amplitude * weights[i];
                     accum.amplitude *= self.persistence;
                     accum.frequency *= self.lacunarity;
                     accum
@@ -1161,6 +1165,7 @@ impl Default for OctaveGen {
             blend_mode: OctaveBlend::Scale,
             offset: (0., 0.),
             distortion: None,
+            distortion_storage: (0., 0.),
         }
     }
 }
