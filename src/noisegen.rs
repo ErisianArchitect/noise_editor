@@ -850,6 +850,27 @@ fn domain_warp<S: NoiseSampler>(sampler: S, x: f64, y: f64) -> f64 {
     sampler.sample_noise(Point::new(x * WIGGLE_DENSITY, y * WIGGLE_DENSITY))
 }
 
+fn normalize_sample(sample: f64) -> f64 {
+    (sample + 1.0) * 0.5
+}
+
+fn denormalize_sample(normalized: f64) -> f64 {
+    normalized * 2.0 - 1.0
+}
+
+#[cfg(test)]
+mod testing_sandbox {
+    // TODO: Remove this sandbox when it is no longer in use.
+    use super::*;
+    #[test]
+    fn sandbox() {
+        let sample = -0.23;
+        let normalized = normalize_sample(sample);
+        let denormalized = denormalize_sample(normalized);
+        println!("Sample: {sample}\nNormalized: {normalized}\nDenormalized: {denormalized}");
+    }
+}
+
 impl OctaveGen {
     pub fn weighted_sample<F: NoiseSampler + Copy, It: IntoIterator<Item = F>>(&self, point: Point, weights: &[f64], layers: It) -> f64 {
         let angle = self.rotation.to_radians();
