@@ -1,2 +1,2 @@
 @echo off
-cargo run %*
+cargo run --release %*
