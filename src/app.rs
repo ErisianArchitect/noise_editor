@@ -5,10 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{self, channel, Sender, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use egui::*;
 use egui::{Color32, Sense, Vec2};
 use image::Rgb;
+use rayon::iter::IntoParallelIterator;
 
 enum NoiseGenAsyncMsg {
     BeginSampling {
@@ -83,12 +85,12 @@ impl ThreadPool {
         // let pool_sender = arc_mutex(pool_sender);
         // let pool_receiver = arc_mutex(pool_receiver);
         let (pool_sender, pool_receiver) = channel();
-        let response_sender = arc_mutex(response_sender);
+        let response_sender = response_sender;
         let task_receiver = arc_mutex(task_receiver);
-        let sampler = Arc::new(sampler);
+        let sampler = sampler;
         let terminate = Arc::new(AtomicBool::new(false));
         let progress = arc_mutex(0.0);
-        let workers = (0..count).map(|id| NoiseGenAsyncWorker::spawn(id, Arc::clone(&sampler), Arc::clone(&response_sender), Arc::clone(&task_receiver), Arc::clone(&terminate))).collect::<Vec<_>>();
+        let workers = (0..count).map(|id| NoiseGenAsyncWorker::spawn(id, sampler.clone(), Sender::clone(&response_sender), Arc::clone(&task_receiver), Arc::clone(&terminate))).collect::<Vec<_>>();
         Self {
             workers,
             receiver: pool_receiver,
@@ -96,47 +98,48 @@ impl ThreadPool {
             progress: Arc::clone(&progress),
             thread: thread::spawn(move || {
                 let mut img = image::RgbImage::new(image_size.0, image_size.1);
-                let x_count = image_size.0 / 32;
-                let y_count = image_size.1 / 32;
-                let x_overflow = image_size.0 % 32;
-                let y_overflow = image_size.1 % 32;
+                let chunk_size = (128, 128);
+                let x_count = image_size.0 / chunk_size.0;
+                let y_count = image_size.1 / chunk_size.1;
+                let x_overflow = image_size.0 % chunk_size.0;
+                let y_overflow = image_size.1 % chunk_size.1;
                 // task_sender
                 // response_receiver
                 // pool_sender
                 let mut task_count = 0;
-                let mut y32 = 0;
+                let mut yr = 0;
                 for y in 0..y_count {
-                    let mut x32 = 0;
+                    let mut xr = 0;
                     for x in 0..x_count {
                         task_sender.send(Job {
-                            offset: (x32, y32),
-                            size: (32, 32)
+                            offset: (xr, yr),
+                            size: chunk_size,
                         }).unwrap();
                         task_count += 1;
-                        x32 += 32;
+                        xr += chunk_size.0;
                     }
                     if x_overflow > 0 {
                         task_sender.send(Job {
-                            offset: (x32, y32),
-                            size: (x_overflow, 32),
+                            offset: (xr, yr),
+                            size: (x_overflow, chunk_size.1),
                         }).unwrap();
                         task_count += 1;
                     }
-                    y32 += 32;
+                    yr += chunk_size.1;
                 }
                 if y_overflow > 0 {
-                    let mut x32 = 0;
+                    let mut xr = 0;
                     for x in 0..x_count {
                         task_sender.send(Job {
-                            offset: (x32, y32),
-                            size: (32, y_overflow),
+                            offset: (xr, yr),
+                            size: (chunk_size.0, y_overflow),
                         }).unwrap();
                         task_count += 1;
-                        x32 += 32;
+                        xr += chunk_size.0;
                     }
                     if x_overflow > 0 {
                         task_sender.send(Job {
-                            offset: (x32, y32),
+                            offset: (xr, yr),
                             size: (x_overflow, y_overflow),
                         }).unwrap();
                         task_count += 1;
@@ -159,12 +162,13 @@ impl ThreadPool {
                             iy += 1;
                         }
                         completed_tasks += 1;
-                        let mut prog = progress.lock().unwrap();
-                        *prog = completed_tasks as f64 / task_count as f64;
+                        // let mut prog = progress.lock().unwrap();
+                        // *prog = completed_tasks as f64 / task_count as f64;
                         if completed_tasks == task_count {
                             break 'thread_pool;
                         }
                     }
+                    thread::sleep(Duration::from_millis(10));
                 }
                 pool_sender.send(img).unwrap();
             })
@@ -204,19 +208,20 @@ mod testing_sandbox {
         println!("Building image...");
         std::io::stdout().flush().unwrap();
         let config = NoiseGenConfig::import("./test_sampler.simp").unwrap();
-        let sampler = NoiseGenSampler::from(config);
+        let sampler = NoiseGenSampler::from(config.clone());
         println!("Num CPUS: {}", num_cpus::get());
         std::io::stdout().flush().unwrap();
         let count = num_cpus::get() as u32;
-        // let count = 12;
-        let mut pool = ThreadPool::spawn(count, (2048, 2048), sampler);
+        let count = 12;
+        let image_size = 2048;
+        let mut pool = ThreadPool::spawn(count, (image_size, image_size), sampler);
         let start_time = std::time::Instant::now();
         let mut print_timer = std::time::Instant::now();
         let result = loop {
             if print_timer.elapsed().as_millis() >= 500 {
                 print_timer = std::time::Instant::now();
-                eprintln!("Progress: {:.2}%", pool.progress() * 100.0);
-                std::io::stdout().flush().unwrap();
+                // println!("Progress: {:.2}%", pool.progress() * 100.0);
+                // std::io::stdout().flush().unwrap();
             }
             if let Some(img) = pool.try_recv() {
                 break img;
@@ -224,7 +229,11 @@ mod testing_sandbox {
         };
         let elapsed = start_time.elapsed();
         result.save("./test_output.png").unwrap();
-        println!("Built image in {} seconds!", elapsed.as_secs_f64());
+        println!("[Multi-Threaded] Built image in {:.2} seconds!", elapsed.as_secs_f64());
+        let start_time = std::time::Instant::now();
+        let img = generate_grayscale_noise(&config, image_size);
+        let elapsed = start_time.elapsed();
+        println!("[Single-Threaded] Built image in {:.2} seconds!", elapsed.as_secs_f64());
     }
 }
 
@@ -238,8 +247,8 @@ struct NoiseGenAsyncWorker {
 impl NoiseGenAsyncWorker {
     pub fn spawn(
         id: u32,
-        sampler: Arc<NoiseGenSampler>,
-        sender: Arc<Mutex<Sender<JobResponse>>>,
+        sampler: NoiseGenSampler,
+        sender: Sender<JobResponse>,
         receiver: Arc<Mutex<Receiver<Job>>>,
         terminate: Arc<AtomicBool>,
     ) -> Self {
@@ -249,8 +258,22 @@ impl NoiseGenAsyncWorker {
                 return;
             }
             if let Ok(Job { offset, size }) = receiver.lock().unwrap().try_recv() {
-                let image = generate_offset_grayscale_noise(sampler.as_ref(), offset, size);
-                sender.lock().unwrap().send(JobResponse::new(image, offset, size)).unwrap();
+                // let image = generate_offset_grayscale_noise(sampler.as_ref(), offset, size);
+                let mut img = image::RgbImage::new(size.0, size.1);
+                let mut yi = 0;
+                for y in offset.1..offset.1 + size.1 {
+                    let mut xi = 0;
+                    for x in offset.0..offset.0 + size.0 {
+                        let fx = x as f64;
+                        let fy = y as f64;
+                        let noise = sampler.sample(Point::new(fx, fy));
+                        let grey = (255.0 * noise) as u8;
+                        img.put_pixel(xi, yi, Rgb([grey, grey, grey]));
+                        xi += 1;
+                    }
+                    yi += 1;
+                }
+                sender.send(JobResponse::new(img, offset, size)).unwrap();
             }
         });
         Self {
@@ -296,6 +319,7 @@ fn next_index() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
+use crate::message_queue::MessageQueue;
 use crate::noisegen::{NoiseGenSampler, NoiseGenConfig, Point};
 
 fn load_image<P: AsRef<Path>>(path: P) -> Result<egui::ColorImage, image::ImageError> {
@@ -332,19 +356,32 @@ fn generate_offset_grayscale_noise(sampler: &NoiseGenSampler, offset: (u32, u32)
     img.into()
 }
 
-fn generate_grayscale_noise(noise_gui: &NoiseGenConfig, size: (u32, u32)) -> image::RgbImage {
-    let mut img = image::RgbImage::new(size.0, size.1);
+fn generate_grayscale_noise(noise_gui: &NoiseGenConfig, size: u32) -> image::RgbImage {
+    let mut img = image::RgbImage::new(size, size);
     let noise_gen: NoiseGenSampler = noise_gui.clone().into();
-    for y in 0..size.1 {
-        for x in 0..size.0 {
-            let fx = x as f64;
-            let fy = y as f64;
-            let noise = noise_gen.sample(Point::new(fx, fy));
-            let grey = (255.0 * noise) as u8;
-            img.put_pixel(x, y, Rgb([grey, grey, grey]));
-        }
-    }
-    img.into()
+    use rayon::prelude::*;
+    use crate::size::Size;
+    let size = Size::new(size, size);
+    img.par_pixels_mut().enumerate().for_each(move |(i, pix)| {
+        let (x, y) = size.inv_index(i as u32);
+        let fx = x as f64;
+        let fy = y as f64;
+        let noise = noise_gen.sample(Point::new(fx, fy));
+        let grey = (255.0 * noise) as u8;
+        *pix = Rgb([grey, grey, grey]);
+    });
+    // if you ever want to see how much faster the parallel version is, you can comment out
+    // the parallel version and uncomment the following code.
+    // for y in 0..size.height {
+    //     for x in 0..size.width {
+    //         let fx = x as f64;
+    //         let fy = y as f64;
+    //         let noise = noise_gen.sample(Point::new(fx, fy));
+    //         let grey = (255.0 * noise) as u8;
+    //         img.put_pixel(x, y, Rgb([grey, grey, grey]));
+    //     }
+    // }
+    img
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -354,8 +391,11 @@ pub struct NoiseEditorApp {
     noisegen_config: NoiseGenConfig,
     auto_generate: bool,
     show_grid: bool,
+    image_size: u32,
     #[serde(skip)]
     texture: Option<TextureHandle>,
+    #[serde(skip)]
+    messages: MessageQueue,
 }
 
 impl Default for NoiseEditorApp {
@@ -364,7 +404,9 @@ impl Default for NoiseEditorApp {
             auto_generate: false,
             noisegen_config: NoiseGenConfig::default(),
             show_grid: true,
+            image_size: 256,
             texture: None,
+            messages: MessageQueue::new(500),
         }
     }
 }
@@ -380,7 +422,7 @@ impl NoiseEditorApp {
         if let Some(storage) = cc.storage {
             let mut editor: Self = eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
             if editor.auto_generate {
-                editor.generate_noise(&cc.egui_ctx);
+                editor.generate_noise(&cc.egui_ctx, editor.image_size);
             }
             return editor;
         }
@@ -390,8 +432,8 @@ impl NoiseEditorApp {
 }
 
 impl NoiseEditorApp {
-    pub fn generate_noise(&mut self, ctx: &Context) {
-        let img = generate_grayscale_noise(&self.noisegen_config, (256, 256));
+    pub fn generate_noise(&mut self, ctx: &Context, size: u32) {
+        let img = generate_grayscale_noise(&self.noisegen_config, size);
         let colorimg = convert_image_rgb(img);
         self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
     }
@@ -443,6 +485,23 @@ impl eframe::App for NoiseEditorApp {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
+                    ui.menu_button("Diagnostics", |ui| {
+                        if ui.button("Min and Max Height").clicked() {
+                            let sampler: NoiseGenSampler = self.noisegen_config.clone().into();
+                            let mut min = f64::MAX;
+                            let mut max = f64::MIN;
+                            for y in 0..self.image_size {
+                                for x in 0..self.image_size {
+                                    let xf = x as f64;
+                                    let yf = y as f64;
+                                    let sample = sampler.sample(Point::new(xf, yf));
+                                    min = min.min(sample);
+                                    max = max.max(sample);
+                                }
+                            }
+                            self.messages.push(format!("The Min is {min} and the Max is {max}."));
+                        }
+                    });
                     ui.add_space(16.0);
                 }
                 
@@ -462,22 +521,48 @@ impl eframe::App for NoiseEditorApp {
                                     painter.image(tex.id(), rect, Rect::from_min_max(Pos2::new(0., 0.), Pos2::new(1., 1.)), Color32::WHITE);
                                 }
                                 if self.show_grid {
-                                    for i in 0..16 {
-                                        let n = i as f32 * (768. / 16.);
-                                        painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
+                                    let grid_size = self.image_size / 16;
+                                    let grid_width = 768. / grid_size as f32;
+                                    for i in 0..(self.image_size / 16) {
+                                        let n = i as f32 * grid_width;
                                         painter.line_segment([Pos2::new(rect.left(), rect.top() + n), Pos2::new(rect.right(), rect.top() + n)], Stroke::new(1.0, Color32::RED));
+                                        painter.line_segment([Pos2::new(rect.left() + n, rect.top()), Pos2::new(rect.left() + n, rect.bottom())], Stroke::new(1.0, Color32::GREEN));
                                     }
                                 }
                             });
                         });
-                        ui.checkbox(&mut self.show_grid, "Show Grid");
+                        ui.horizontal(|ui| {
+                            let cur_size = self.image_size;
+                            let resp = ComboBox::new("image_size_combo", "Image Size")
+                            .selected_text(format!("{cur_size}x{cur_size}"))
+                            .show_ui(ui, |ui| {
+                                for i in 4..14 {
+                                    let size = 1 << i;
+                                    ui.selectable_value(&mut self.image_size, size, format!("{size}x{size}"));
+                                }
+                            });
+                            if self.auto_generate && cur_size != self.image_size {
+                                self.generate_noise(ctx, self.image_size);
+                            }
+                            ui.checkbox(&mut self.show_grid, "Show Grid");
+                        });
+                        ScrollArea::new([false, true])
+                            .drag_to_scroll(false)
+                            .max_width(f32::INFINITY)
+                            .id_source("messages_scroll_area")
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                for msg in self.messages.iter() {
+                                    ui.label(msg);
+                                }
+                            });
                     });
                 });
                 ui.vertical(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(512., ui.spacing().interact_size.y), Sense::hover());
                     let button = egui::Button::new("Save").rounding(Rounding::ZERO);
                     if ui.put(rect, button).clicked() {
-                        let img = generate_grayscale_noise(&self.noisegen_config, (256, 256));
+                        let img = generate_grayscale_noise(&self.noisegen_config, self.image_size);
                         let save_file = rfd::FileDialog::new()
                             .add_filter("png", &["png"])
                             .set_file_name("output")
@@ -493,7 +578,11 @@ impl eframe::App for NoiseEditorApp {
                         // let img = generate_grayscale_noise(&self.noisegen_config);
                         // let colorimg = convert_image_rgb(img);
                         // self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
-                        self.generate_noise(ctx);
+                        self.messages.push("Generating noise...");
+                        let st = std::time::Instant::now();
+                        self.generate_noise(ctx, self.image_size);
+                        let el = st.elapsed();
+                        self.messages.push(format!("Generation finished in {:.4} seconds.", el.as_secs_f64()));
                     }
                     ui.checkbox(&mut self.auto_generate, "Auto Generate");
                     let resp = self.noisegen_config.ui(ui);
@@ -501,7 +590,7 @@ impl eframe::App for NoiseEditorApp {
                         // let img = generate_grayscale_noise(&self.noisegen_config);
                         // let colorimg = convert_image_rgb(img);
                         // self.texture = Some(ctx.load_texture(format!("generation{}", next_index()), colorimg, TextureOptions::LINEAR));
-                        self.generate_noise(ctx);
+                        self.generate_noise(ctx, self.image_size);
                     }
                 });
             });
